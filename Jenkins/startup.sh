@@ -15,5 +15,6 @@ fi
 
 echo "[startup] Starting Jenkins CI Server on port 7860..."
 
-
-exec /usr/local/bin/jenkins.sh
+# 🌟 致命崩溃修复：将 Java 临时目录指向 /data/tmp 绕过 HF 的 /tmp 封杀限制
+# 同时强行注入跳过安装向导的参数，彻底解决环境变量被吞的问题
+exec java -Duser.home=/data -Djava.io.tmpdir=/data/tmp -Djenkins.install.runSetupWizard=false -jar /usr/share/jenkins/jenkins.war --httpPort=7860
