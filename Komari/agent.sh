@@ -269,7 +269,7 @@ install_dependencies
 # Architecture detection with platform-specific support
 arch=$(uname -m)
 case $arch in
-    x86_64)
+    x86_64|amd64) # 🌟 【修复点】：添加对 FreeBSD 原生 amd64 字符串的直接匹配
         arch="amd64"
         ;;
     aarch64|arm64)
