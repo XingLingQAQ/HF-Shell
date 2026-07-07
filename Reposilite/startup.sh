@@ -24,4 +24,4 @@ echo "[Reposilite] Starting Maven Repository Server on port 7860..."
 exec java -Djava.io.tmpdir=/data/tmp -jar /app/reposilite.jar \
     --port=7860 \
     --working-directory=/data \
-    --token=XingLingQAQ:${PASSWORD}
+    --token=XingLingQAQ:"${PASSWORD:-admin123}"
