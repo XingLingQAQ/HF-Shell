@@ -90,7 +90,7 @@ http {
     server {
         listen 7860;
         
-        # 补全 Host 头，防止 Next.js 拒绝请求
+        # 1. 面板静态页面
         location / {
             proxy_pass http://127.0.0.1:3000;
             proxy_http_version 1.1;
@@ -99,6 +99,14 @@ http {
             proxy_set_header Connection \$connection_upgrade;
         }
 
+        # 2. 【核心修复】优先放行 Kuma Mieru 自己的实时数据 API，确保状态能正确显示
+        location ~ ^/api/(config|health|icon|manage-status-page|monitor) {
+            proxy_pass http://127.0.0.1:3000;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+        }
+
+        # 3. 后台入口
         location ^~ /admin {
             rewrite ^/admin(.*)$ /\$1 break;
             proxy_pass http://127.0.0.1:3001;
@@ -108,6 +116,7 @@ http {
             proxy_set_header Host \$host;
         }
         
+        # 4. Uptime Kuma 的底层依赖（剥离了上面的 Mieru API）
         location ~ ^/(assets|api|socket\.io|upload|icon\.svg|manifest\.json|apple-touch-icon\.png|dashboard|setup|login|add|edit|settings|status) {
             proxy_pass http://127.0.0.1:3001;
             proxy_http_version 1.1;
