@@ -34,18 +34,18 @@ if [ ! -d "/app/mieru" ]; then
 fi
 cd /app/mieru
 
-# 面板编译需要拉取 API，此时因为在同一域名下，填你自己的域名即可
 if [ -n "$KUMA_API_URL" ]; then
     echo "UPTIME_KUMA_URLS=$KUMA_API_URL" > .env
 fi
 
+# 使用 bun 替代 npm，完美解决依赖报错并大幅提速
 if [ ! -d "node_modules" ]; then
-    npm install
+    bun install
 fi
 if [ ! -d ".next" ]; then
-    npm run build
+    bun run build
 fi
-PORT=3000 npm run start >/dev/null 2>&1 &
+PORT=3000 bun run start >/dev/null 2>&1 &
 
 # ==========================================
 # 3. 静默启动 Cloudflare Tunnel
@@ -59,7 +59,7 @@ if [ -n "$CF_TOKEN" ]; then
 fi
 
 # ==========================================
-# 4. 生成 Nginx 魔改路由，并作为主进程挂载 (监听 7860 扛检测)
+# 4. 生成 Nginx 魔改路由，并作为主进程挂载 (监听 7860)
 # ==========================================
 cat <<EOF > /tmp/nginx.conf
 worker_processes 1;
@@ -97,7 +97,7 @@ http {
             proxy_set_header Connection \$connection_upgrade;
         }
         
-        # 【规则3】底层放行，精准拦截 Kuma 必备资源和跳转目录，防止白屏
+        # 【规则3】底层放行，精准拦截 Kuma 必备资源和跳转目录
         location ~ ^/(assets|api|socket\.io|upload|icon\.svg|manifest\.json|apple-touch-icon\.png|dashboard|setup|login|add|edit|settings|status) {
             proxy_pass http://127.0.0.1:3001;
             proxy_http_version 1.1;
@@ -108,5 +108,4 @@ http {
 }
 EOF
 
-# 让 Nginx 在前台运行，彻底隐藏后方的服务
 exec nginx -c /tmp/nginx.conf -g "daemon off;"
