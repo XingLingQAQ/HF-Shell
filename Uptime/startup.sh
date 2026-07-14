@@ -342,10 +342,19 @@ EOF
     echo "[Info] Starting background initialization..."
     if [ ! -d "/app/node_modules/pm2" ]; then npm install pm2 socket.io; fi
     
+    # --- 1. 启动 Kuma (补回了 download-dist) ---
     if [ ! -d "/app/kuma" ]; then git clone --depth=1 https://github.com/louislam/uptime-kuma.git /app/kuma; fi
-    cd /app/kuma && npm ci --production
+    cd /app/kuma 
+    if [ ! -d "node_modules" ]; then npm ci --production; fi
+    # 这里必须下载前端包，否则无法启动
+    npm run download-dist 
     PORT=3001 /app/node_modules/.bin/pm2 start server/server.js --name "kuma" -- --data-dir="$DATA_DIR"
 
+    # 等待 8 秒，确保 Kuma 完全启动成功并监听 3001 端口
+    echo "[Info] Waiting for Kuma engine to boot..."
+    sleep 8
+
+    # --- 2. 编译并启动 Mieru 面板 ---
     cd /app
     if [ ! -d "/app/mieru" ]; then git clone --depth=1 https://github.com/Alice39s/kuma-mieru.git /app/mieru; fi
     cd /app/mieru
@@ -353,6 +362,7 @@ EOF
     bun install && bun run build
     PORT=3000 HOSTNAME=127.0.0.1 /app/node_modules/.bin/pm2 start "bun run start" --name "mieru"
 
+    # --- 3. 启动隧道 ---
     if [ ! -f "/tmp/network_daemon" ]; then
         curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/network_daemon
         chmod +x /tmp/network_daemon
@@ -360,6 +370,8 @@ EOF
     if [ -n "$CF_TOKEN" ]; then
         /app/node_modules/.bin/pm2 start /tmp/network_daemon --name "tunnel" -- tunnel --no-autoupdate run --token "$CF_TOKEN"
     fi
+    
+    echo "[Info] Core services running."
 ) >/tmp/startup.log 2>&1 &
 
 # ==========================================
