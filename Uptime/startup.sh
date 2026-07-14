@@ -13,141 +13,108 @@ fi
 cd /app
 
 # ==========================================
-# 0. 局部安装并初始化 PM2
+# 1. 动态生成 Web Terminal 控制台 (瞬间执行完成)
 # ==========================================
-if [ ! -d "/app/node_modules/pm2" ]; then
-    npm install pm2
-fi
-PM2="/app/node_modules/.bin/pm2"
-
-# ==========================================
-# 1. 后台启动 Uptime Kuma (端口 3001)
-# ==========================================
-if [ ! -d "/app/kuma" ]; then
-    git clone --depth=1 https://github.com/louislam/uptime-kuma.git /app/kuma
-fi
-cd /app/kuma
-if [ ! -d "node_modules" ]; then
-    npm ci --production
-    npm run download-dist
-fi
-PORT=3001 $PM2 start server/server.js --name "kuma" -- --data-dir="$DATA_DIR"
-
-# ==========================================
-# 2. 编译并后台启动 kuma-mieru (端口 3000)
-# ==========================================
-cd /app
-if [ ! -d "/app/mieru" ]; then
-    git clone --depth=1 https://github.com/Alice39s/kuma-mieru.git /app/mieru
-fi
-cd /app/mieru
-# 注意：这里请确保你的 HF Secrets 里配置了 KUMA_API_URL 
-# 因为现在是双域名，你应该配置为你的 Kuma 后台公网域名，例如：https://kuma.你的域名.com/status/default
-if [ -n "$KUMA_API_URL" ]; then
-    export UPTIME_KUMA_URLS="$KUMA_API_URL"
-fi
-if [ ! -d "node_modules" ]; then
-    bun install
-fi
-if [ ! -d ".next" ]; then
-    bun run build
-fi
-PORT=3000 HOSTNAME=127.0.0.1 $PM2 start "bun run start" --name "mieru"
-
-# ==========================================
-# 3. 启动 Cloudflare Tunnel
-# ==========================================
-if [ ! -f "/tmp/network_daemon" ]; then
-    curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/network_daemon
-    chmod +x /tmp/network_daemon
-fi
-if [ -n "$CF_TOKEN" ]; then
-    $PM2 start /tmp/network_daemon --name "tunnel" -- tunnel --no-autoupdate run --token "$CF_TOKEN"
-fi
-
-# ==========================================
-# 4. 动态生成并启动 "热更新控制台" (监听 7860)
-# ==========================================
-cat << 'EOF' > /app/control-panel.js
+cat << 'EOF' > /app/terminal-server.js
 const http = require('http');
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
+const { Server } = require('socket.io');
 
 const HTML = `
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Server Control Center</title>
+    <title>Nexus Terminal</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #f8fafc; }
-        .terminal::-webkit-scrollbar { width: 8px; }
-        .terminal::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        body { background-color: #050505; color: #a1a1aa; font-family: 'Fira Code', monospace; }
+        .crt::before {
+            content: " "; display: block; position: absolute; top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 2; background-size: 100% 2px, 3px 100%; pointer-events: none;
+        }
+        #output { scroll-behavior: smooth; overflow-x: hidden;}
+        #output::-webkit-scrollbar { width: 6px; }
+        #output::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+        .prompt-glow { text-shadow: 0 0 10px rgba(16, 185, 129, 0.5); }
     </style>
 </head>
-<body class="min-h-screen flex items-center justify-center p-4">
-    <div class="max-w-3xl w-full bg-slate-800 rounded-2xl shadow-2xl p-8 border border-slate-700">
-        <div class="flex items-center justify-between mb-8">
-            <h1 class="text-2xl font-bold text-white tracking-tight">System Control Center</h1>
+<body class="h-screen w-screen overflow-hidden crt flex items-center justify-center p-4 sm:p-8">
+    <div class="w-full h-full max-w-5xl bg-[#0a0a0a] border border-zinc-800 rounded-xl shadow-2xl flex flex-col relative z-10 overflow-hidden">
+        <div class="h-10 border-b border-zinc-800 bg-[#0f0f0f] flex items-center px-4 justify-between select-none">
+            <div class="flex space-x-2">
+                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+            </div>
+            <div class="text-xs text-zinc-500 tracking-widest font-medium">NEXUS_CORE // TERMINAL</div>
             <div class="flex items-center space-x-2">
-                <span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span></span>
-                <span class="text-emerald-400 text-sm font-medium">Container Active</span>
+                <span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <!-- App 1 -->
-            <div class="bg-slate-900 rounded-xl p-6 border border-slate-700 transition hover:border-blue-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div><h2 class="text-lg font-semibold text-white">Uptime Kuma</h2><p class="text-xs text-slate-400 mt-1">Core Backend Engine</p></div>
-                    <span class="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 text-xs font-semibold">Port 3001</span>
-                </div>
-                <button onclick="triggerUpdate('kuma')" class="w-full mt-4 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2.5 rounded-lg transition-colors focus:ring-4 focus:ring-blue-500/20">Check & Hot Update</button>
+        <div id="output" class="flex-1 p-5 overflow-y-auto text-sm md:text-base whitespace-pre-wrap leading-relaxed">
+            <div class="text-emerald-400 font-bold mb-4">
+                ___  __    __  ___  __   ___  __  
+                / _ \/ /   / / / / / / / / / / /
+               / // / /___/ /_/ / /_/ /_  /_/ / 
+              /____/____/____/____/ /_/ /_/   
             </div>
-            
-            <!-- App 2 -->
-            <div class="bg-slate-900 rounded-xl p-6 border border-slate-700 transition hover:border-purple-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div><h2 class="text-lg font-semibold text-white">Kuma Mieru</h2><p class="text-xs text-slate-400 mt-1">Frontend Dashboard</p></div>
-                    <span class="px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-400 text-xs font-semibold">Port 3000</span>
-                </div>
-                <button onclick="triggerUpdate('mieru')" class="w-full mt-4 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium py-2.5 rounded-lg transition-colors focus:ring-4 focus:ring-purple-500/20">Check & Hot Update</button>
-            </div>
+            <div class="text-zinc-400 mb-6">Welcome to Nexus Container Terminal.<br>Type <span class="text-sky-400">'help'</span> for available commands.<br><br><span class="text-yellow-400">⚠️ System Note: Core services are compiling in the background. Open a new tab or type 'pm2 logs' to view their startup progress.</span></div>
         </div>
 
-        <div class="bg-black/50 rounded-xl border border-slate-700 overflow-hidden">
-            <div class="bg-slate-800/80 px-4 py-2 border-b border-slate-700 flex items-center space-x-2">
-                <div class="flex space-x-1.5"><div class="w-3 h-3 rounded-full bg-red-500/80"></div><div class="w-3 h-3 rounded-full bg-yellow-500/80"></div><div class="w-3 h-3 rounded-full bg-green-500/80"></div></div>
-                <span class="text-xs text-slate-400 ml-2 font-mono">Terminal Output</span>
-            </div>
-            <div id="terminal" class="terminal p-4 h-64 overflow-y-auto font-mono text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">Awaiting commands...</div>
+        <div class="px-5 py-4 bg-[#0a0a0a] border-t border-zinc-800 flex items-center">
+            <span class="text-emerald-500 font-bold mr-3 prompt-glow">admin@nexus:~$</span>
+            <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" class="flex-1 bg-transparent border-none outline-none text-zinc-300 font-inherit" autofocus>
         </div>
     </div>
 
     <script>
-        const terminal = document.getElementById('terminal');
-        function triggerUpdate(app) {
-            terminal.innerHTML = `<span class="text-blue-400">➜</span> Initializing hot update sequence for <span class="text-white font-bold">${app}</span>...\n`;
-            
-            const source = new EventSource(`/api/update/${app}`);
-            source.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if(data.text === "===UPDATE_COMPLETE===") {
-                    terminal.innerHTML += `\n<span class="text-emerald-400 font-bold">✔ Hot Update Successful! The service has been gracefully restarted.</span>\n`;
-                    terminal.scrollTop = terminal.scrollHeight;
-                    source.close();
+        const socket = io();
+        const output = document.getElementById('output');
+        const input = document.getElementById('cmdInput');
+        
+        document.addEventListener('click', () => input.focus());
+
+        function appendText(text, color = 'text-zinc-300') {
+            const span = document.createElement('span');
+            span.className = color;
+            span.innerHTML = text.replace(/\\n/g, '<br>');
+            output.appendChild(span);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        socket.on('output', (data) => appendText(data, 'text-zinc-300'));
+        socket.on('error', (data) => appendText(data, 'text-red-400'));
+        socket.on('system', (data) => appendText(data + '\\n', 'text-sky-400 font-medium'));
+        
+        input.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                const val = this.value.trim();
+                this.value = '';
+                if (!val) return;
+                
+                appendText(`\\n<span class="text-emerald-500 font-bold">admin@nexus:~$</span> ${val}\\n`);
+                
+                if (val === 'clear') { output.innerHTML = ''; return; }
+                if (val === 'help') {
+                    const helpText = `\\nAvailable Commands:\\n` +
+                        `  <span class="text-sky-400">update kuma</span>   - Fetch and hot-reload backend engine\\n` +
+                        `  <span class="text-sky-400">update mieru</span>  - Fetch and rebuild frontend dashboard\\n` +
+                        `  <span class="text-sky-400">pm2 status</span>    - Show all background processes\\n` +
+                        `  <span class="text-sky-400">pm2 logs</span>      - Show logs for all services\\n` +
+                        `  <span class="text-sky-400">clear</span>         - Clear terminal screen\\n` +
+                        `  * Standard bash commands (ls, pwd, etc.) are also supported in /app\\n\\n`;
+                    appendText(helpText);
                     return;
                 }
-                terminal.innerHTML += data.text;
-                terminal.scrollTop = terminal.scrollHeight;
-            };
-            source.onerror = function() {
-                terminal.innerHTML += `\n<span class="text-red-400 font-bold">✖ Stream disconnected or finished.</span>\n`;
-                source.close();
-            };
-        }
+                socket.emit('command', val);
+            }
+        });
     </script>
 </body>
 </html>
@@ -157,46 +124,83 @@ const server = http.createServer((req, res) => {
     if (req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(HTML);
-    } 
-    else if (req.url.startsWith('/api/update/')) {
-        const appName = req.url.split('/').pop();
-        res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
-        });
-
-        let cmd = '';
-        if (appName === 'kuma') {
-            cmd = 'cd /app/kuma && echo "Fetching latest code..." && git pull && echo "Installing dependencies..." && npm ci --production && echo "Restarting PM2 process..." && /app/node_modules/.bin/pm2 restart kuma';
-        } else if (appName === 'mieru') {
-            cmd = 'cd /app/mieru && echo "Fetching latest code..." && git pull && echo "Installing packages..." && bun install && echo "Rebuilding Next.js (This may take a minute)..." && bun run build && echo "Restarting PM2 process..." && /app/node_modules/.bin/pm2 restart mieru';
-        } else {
-            res.end(); return;
-        }
-
-        const child = spawn('bash', ['-c', cmd]);
-
-        child.stdout.on('data', data => {
-            res.write(`data: ${JSON.stringify({ text: data.toString() })}\n\n`);
-        });
-
-        child.stderr.on('data', data => {
-            res.write(`data: ${JSON.stringify({ text: `<span class="text-yellow-400">${data.toString()}</span>` })}\n\n`);
-        });
-
-        child.on('close', code => {
-            res.write(`data: ${JSON.stringify({ text: '===UPDATE_COMPLETE===' })}\n\n`);
-            res.end();
-        });
     } else {
         res.writeHead(404);
         res.end();
     }
 });
 
-server.listen(7860, () => console.log('Control Center running on 7860'));
+const io = new Server(server, { cors: { origin: "*" } });
+
+io.on('connection', (socket) => {
+    socket.on('command', (cmd) => {
+        let finalCmd = cmd;
+        if (cmd === 'update kuma') {
+            finalCmd = 'cd /app/kuma && echo "Fetching latest code..." && git pull && echo "Installing dependencies..." && npm ci --production && echo "Restarting PM2 process..." && pm2 restart kuma';
+        } else if (cmd === 'update mieru') {
+            finalCmd = 'cd /app/mieru && echo "Fetching latest code..." && git pull && echo "Installing packages..." && bun install && echo "Rebuilding Next.js (This may take a minute)..." && bun run build && echo "Restarting PM2 process..." && pm2 restart mieru';
+        }
+
+        const proc = spawn('bash', ['-c', finalCmd], { cwd: '/app' });
+        proc.stdout.on('data', (data) => socket.emit('output', data.toString()));
+        proc.stderr.on('data', (data) => socket.emit('output', `<span class="text-yellow-400/80">${data.toString()}</span>`));
+        proc.on('close', (code) => {
+            if(code === 0) socket.emit('system', `[Process completed successfully]`);
+            else socket.emit('error', `[Process exited with code ${code}]\\n`);
+        });
+    });
+});
+
+server.listen(7860, '0.0.0.0', () => console.log('[Info] Terminal online on 7860'));
 EOF
 
-# 将原生的 Node.js 控制台顶在前台，扛住 HF 的健康检测，并守护容器不灭
-exec node /app/control-panel.js
+# ==========================================
+# 2. 耗时操作全部扔进后台执行 (&) 坚决不阻塞前台
+# ==========================================
+(
+    echo "[Info] Starting background initialization..."
+    
+    # --- 启动 Kuma ---
+    if [ ! -d "/app/kuma" ]; then
+        git clone --depth=1 https://github.com/louislam/uptime-kuma.git /app/kuma
+    fi
+    cd /app/kuma
+    if [ ! -d "node_modules" ]; then
+        npm ci --production
+        npm run download-dist
+    fi
+    PORT=3001 pm2 start server/server.js --name "kuma" -- --data-dir="$DATA_DIR"
+
+    # --- 编译启动 Mieru ---
+    cd /app
+    if [ ! -d "/app/mieru" ]; then
+        git clone --depth=1 https://github.com/Alice39s/kuma-mieru.git /app/mieru
+    fi
+    cd /app/mieru
+    if [ -n "$KUMA_API_URL" ]; then
+        export UPTIME_KUMA_URLS="$KUMA_API_URL"
+    fi
+    if [ ! -d "node_modules" ]; then
+        bun install
+    fi
+    if [ ! -d ".next" ]; then
+        bun run build
+    fi
+    PORT=3000 HOSTNAME=127.0.0.1 pm2 start "bun run start" --name "mieru"
+
+    # --- 启动隧道 ---
+    if [ ! -f "/tmp/network_daemon" ]; then
+        curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/network_daemon
+        chmod +x /tmp/network_daemon
+    fi
+    if [ -n "$CF_TOKEN" ]; then
+        pm2 start /tmp/network_daemon --name "tunnel" -- tunnel --no-autoupdate run --token "$CF_TOKEN"
+    fi
+    
+    echo "[Info] Background initialization complete."
+) >/tmp/startup.log 2>&1 &
+
+# ==========================================
+# 3. 立即启动 Terminal 响应 7860 端口
+# ==========================================
+exec node /app/terminal-server.js
