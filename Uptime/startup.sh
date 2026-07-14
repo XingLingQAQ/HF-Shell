@@ -353,6 +353,7 @@ EOF
     # 等待 8 秒，确保 Kuma 完全启动成功并监听 3001 端口
     echo "[Info] Waiting for Kuma engine to boot..."
     sleep 8
+    rm -f /app/package.json /app/package-lock.json
 
     # --- 2. 编译并启动 Mieru 面板 ---
     cd /app
