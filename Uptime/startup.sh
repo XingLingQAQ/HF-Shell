@@ -13,7 +13,7 @@ fi
 cd /app
 
 # ==========================================
-# 1. 动态生成 Web Terminal 控制台 (瞬间执行完成)
+# 1. 动态生成 Web Terminal 控制台 (修复了反引号语法冲突)
 # ==========================================
 cat << 'EOF' > /app/terminal-server.js
 const http = require('http');
@@ -58,11 +58,8 @@ const HTML = `
         </div>
 
         <div id="output" class="flex-1 p-5 overflow-y-auto text-sm md:text-base whitespace-pre-wrap leading-relaxed">
-            <div class="text-emerald-400 font-bold mb-4">
-                ___  __    __  ___  __   ___  __  
-                / _ \/ /   / / / / / / / / / / /
-               / // / /___/ /_/ / /_/ /_  /_/ / 
-              /____/____/____/____/ /_/ /_/   
+            <div class="text-emerald-400 text-xl md:text-2xl font-bold mb-4 tracking-[0.2em]">
+                N E X U S // T E R M I N A L
             </div>
             <div class="text-zinc-400 mb-6">Welcome to Nexus Container Terminal.<br>Type <span class="text-sky-400">'help'</span> for available commands.<br><br><span class="text-yellow-400">⚠️ System Note: Core services are compiling in the background. Open a new tab or type 'pm2 logs' to view their startup progress.</span></div>
         </div>
@@ -98,17 +95,18 @@ const HTML = `
                 this.value = '';
                 if (!val) return;
                 
-                appendText(`\\n<span class="text-emerald-500 font-bold">admin@nexus:~$</span> ${val}\\n`);
+                // 【核心修复】：完全去掉了反引号，改用单引号 + 字符串拼接
+                appendText('\\n<span class="text-emerald-500 font-bold">admin@nexus:~$</span> ' + val + '\\n');
                 
                 if (val === 'clear') { output.innerHTML = ''; return; }
                 if (val === 'help') {
-                    const helpText = `\\nAvailable Commands:\\n` +
-                        `  <span class="text-sky-400">update kuma</span>   - Fetch and hot-reload backend engine\\n` +
-                        `  <span class="text-sky-400">update mieru</span>  - Fetch and rebuild frontend dashboard\\n` +
-                        `  <span class="text-sky-400">pm2 status</span>    - Show all background processes\\n` +
-                        `  <span class="text-sky-400">pm2 logs</span>      - Show logs for all services\\n` +
-                        `  <span class="text-sky-400">clear</span>         - Clear terminal screen\\n` +
-                        `  * Standard bash commands (ls, pwd, etc.) are also supported in /app\\n\\n`;
+                    const helpText = '\\nAvailable Commands:\\n' +
+                        '  <span class="text-sky-400">update kuma</span>   - Fetch and hot-reload backend engine\\n' +
+                        '  <span class="text-sky-400">update mieru</span>  - Fetch and rebuild frontend dashboard\\n' +
+                        '  <span class="text-sky-400">pm2 status</span>    - Show all background processes\\n' +
+                        '  <span class="text-sky-400">pm2 logs</span>      - Show logs for all services\\n' +
+                        '  <span class="text-sky-400">clear</span>         - Clear terminal screen\\n' +
+                        '  * Standard bash commands (ls, pwd, etc.) are also supported in /app\\n\\n';
                     appendText(helpText);
                     return;
                 }
