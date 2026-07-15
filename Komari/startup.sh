@@ -59,8 +59,8 @@ const DEFAULT_HTML = `
 
         <div class="border-b border-zinc-800 bg-[#0a0a0a] p-3 flex flex-wrap gap-2 text-xs font-medium z-20">
             <button onclick="sendCommand('pm2 status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📊 进程状态</button>
-            <button onclick="sendCommand('update komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 热更 Komari</button>
-            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">🔄 热更 Tunnel</button>
+            <button onclick="sendCommand('update komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 检查更新 Komari</button>
+            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">🔄 检查更新 Tunnel</button>
             <button onclick="sendCommand('pm2 logs komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 系统日志</button>
             <button onclick="sendCommand('pm2 logs tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 隧道日志</button>
             <button onclick="sendCommand('clear')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-500 ml-auto">🗑️ 清屏</button>
@@ -76,7 +76,6 @@ const DEFAULT_HTML = `
             <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" class="flex-1 bg-transparent border-none outline-none text-zinc-300 font-inherit" autofocus>
         </div>
 
-        <!-- 热编辑器组件 -->
         <div id="editorOverlay" class="hidden absolute inset-0 bg-black/95 z-50 flex flex-col p-4 sm:p-8 backdrop-blur-sm">
             <div class="flex justify-between items-center mb-4">
                 <div>
@@ -98,11 +97,8 @@ const DEFAULT_HTML = `
         const output = document.getElementById('output');
         const input = document.getElementById('cmdInput');
         
-        // 【核心修复】：解决鼠标划选文本时立刻被抢走焦点的问题
         document.addEventListener('mouseup', (e) => { 
-            // 如果用户选定了任何文字，直接退出，不要抢焦点
             if (window.getSelection().toString().length > 0) return;
-            // 如果点的是按钮或代码编辑器，也不要抢焦点
             if(e.target.tagName !== 'BUTTON' && e.target.tagName !== 'TEXTAREA') {
                 input.focus();
             }
@@ -207,29 +203,55 @@ module.exports = {
         socket.on('command', (cmd) => {
             let finalCmd = cmd;
             
-            // Komari 内核一键更新
+            // Komari 智能版本比对与更新
             if (cmd === 'update komari') {
                 finalCmd = `
-                    echo "Fetching latest Komari release info..." &&
-                    LATEST_URL=$(curl -s https://api.github.com/repos/komari-monitor/komari/releases/latest | grep "browser_download_url.*linux-amd64" | cut -d '"' -f 4) &&
-                    if [ -z "$LATEST_URL" ]; then echo "Error: Could not find linux-amd64 release asset."; exit 1; fi &&
-                    echo "Downloading: $LATEST_URL" &&
-                    curl -sL "$LATEST_URL" -o /tmp/komari_new &&
-                    chmod +x /tmp/komari_new &&
-                    mv /tmp/komari_new /app/komari_bin &&
-                    echo "Restarting service..." &&
-                    /app/node_modules/.bin/pm2 restart komari
+                    echo "Checking latest Komari release info..."
+                    LATEST_JSON=$(curl -s https://api.github.com/repos/komari-monitor/komari/releases/latest)
+                    LATEST_TAG=$(echo "$LATEST_JSON" | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+                    LOCAL_TAG=$(cat /app/.komari_version 2>/dev/null || echo "none")
+                    if [ -z "$LATEST_TAG" ]; then
+                        echo "Error: Could not fetch latest version."
+                        exit 1
+                    fi
+                    if [ "$LATEST_TAG" = "$LOCAL_TAG" ]; then
+                        echo "✅ Komari is already up-to-date (Version: $LATEST_TAG). Skipping download."
+                    else
+                        echo "🚀 New version found: $LATEST_TAG (Current: $LOCAL_TAG)"
+                        LATEST_URL=$(echo "$LATEST_JSON" | grep "browser_download_url.*linux-amd64" | head -n 1 | cut -d '"' -f 4)
+                        if [ -z "$LATEST_URL" ]; then echo "Error: Could not find linux-amd64 asset."; exit 1; fi
+                        echo "Downloading: $LATEST_URL"
+                        curl -sL "$LATEST_URL" -o /tmp/komari_new
+                        chmod +x /tmp/komari_new
+                        mv /tmp/komari_new /app/komari_bin
+                        echo "$LATEST_TAG" > /app/.komari_version
+                        echo "Restarting service..."
+                        /app/node_modules/.bin/pm2 restart komari
+                    fi
                 `;
             } 
-            // 【新增】：CF Tunnel 一键热更新
+            // CF Tunnel 智能版本比对与更新
             else if (cmd === 'update tunnel') {
                 finalCmd = `
-                    echo "Fetching latest cloudflared release..." &&
-                    curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/cloudflared_new &&
-                    chmod +x /tmp/cloudflared_new &&
-                    mv /tmp/cloudflared_new /app/cloudflared &&
-                    echo "Restarting tunnel service..." &&
-                    /app/node_modules/.bin/pm2 restart tunnel
+                    echo "Checking latest Cloudflared release info..."
+                    LATEST_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+                    LOCAL_TAG=$(cat /app/.tunnel_version 2>/dev/null || echo "none")
+                    if [ -z "$LATEST_TAG" ]; then
+                        echo "Error: Could not fetch latest version."
+                        exit 1
+                    fi
+                    if [ "$LATEST_TAG" = "$LOCAL_TAG" ]; then
+                        echo "✅ Cloudflared is already up-to-date (Version: $LATEST_TAG). Skipping download."
+                    else
+                        echo "🚀 New version found: $LATEST_TAG (Current: $LOCAL_TAG)"
+                        echo "Downloading latest cloudflared release..."
+                        curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/cloudflared_new
+                        chmod +x /tmp/cloudflared_new
+                        mv /tmp/cloudflared_new /app/cloudflared
+                        echo "$LATEST_TAG" > /app/.tunnel_version
+                        echo "Restarting tunnel service..."
+                        /app/node_modules/.bin/pm2 restart tunnel
+                    fi
                 `;
             }
             else if (cmd.startsWith('pm2')) finalCmd = '/app/node_modules/.bin/' + cmd;
@@ -287,13 +309,16 @@ EOF
 (
     echo "[Info] Starting background processes..."
 
-    # 1. 动态拉取 Komari 核心二进制包
+    # 1. 动态拉取 Komari 核心二进制包 (并记录初始版本)
     if [ ! -f "/app/komari_bin" ]; then
         echo "[Info] Downloading initial Komari binary..."
-        LATEST_URL=$(curl -s https://api.github.com/repos/komari-monitor/komari/releases/latest | grep "browser_download_url.*linux-amd64" | cut -d '"' -f 4)
+        LATEST_JSON=$(curl -s https://api.github.com/repos/komari-monitor/komari/releases/latest)
+        LATEST_TAG=$(echo "$LATEST_JSON" | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+        LATEST_URL=$(echo "$LATEST_JSON" | grep "browser_download_url.*linux-amd64" | head -n 1 | cut -d '"' -f 4)
         if [ -n "$LATEST_URL" ]; then
             curl -sL "$LATEST_URL" -o /app/komari_bin
             chmod +x /app/komari_bin
+            echo "$LATEST_TAG" > /app/.komari_version
         else
             echo "[Error] Failed to fetch Komari download URL."
         fi
@@ -304,11 +329,14 @@ EOF
         /app/node_modules/.bin/pm2 start /app/komari_bin --name "komari"
     fi
 
-    # 3. 启动 Cloudflare Tunnel
+    # 3. 启动 Cloudflare Tunnel (并记录初始版本)
     if [ ! -f "/app/cloudflared" ]; then
+        LATEST_TUNNEL_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
         curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /app/cloudflared
         chmod +x /app/cloudflared
+        echo "$LATEST_TUNNEL_TAG" > /app/.tunnel_version
     fi
+    
     if [ -n "$CF_TOKEN" ]; then
         /app/node_modules/.bin/pm2 start /app/cloudflared --name "tunnel" -- tunnel --no-autoupdate run --token "$CF_TOKEN"
     fi
