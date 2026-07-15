@@ -261,14 +261,6 @@ process.on('HOT_RELOAD_LOGIC', () => {
 server.listen(7860, '0.0.0.0', () => console.log('[Info] Bootstrapper Online. Guarding port 7860.'));
 EOF
 
-# ==========================================
-# 3. 阻塞式安装核心依赖 (必须在前台，否则触发竞态崩溃)
-# ==========================================
-echo "[Info] Checking core dependencies..."
-if [ ! -d "/app/node_modules/socket.io" ] || [ ! -d "/app/node_modules/pm2" ]; then 
-    echo "[Info] Installing pm2 and socket.io..."
-    npm install pm2 socket.io 
-fi
 
 # ==========================================
 # 4. 核心业务守护进程 (放入后台静默执行)
