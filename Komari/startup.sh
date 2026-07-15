@@ -59,7 +59,8 @@ const DEFAULT_HTML = `
 
         <div class="border-b border-zinc-800 bg-[#0a0a0a] p-3 flex flex-wrap gap-2 text-xs font-medium z-20">
             <button onclick="sendCommand('pm2 status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📊 进程状态</button>
-            <button onclick="sendCommand('update komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 热更 Komari 内核</button>
+            <button onclick="sendCommand('update komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 热更 Komari</button>
+            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">🔄 热更 Tunnel</button>
             <button onclick="sendCommand('pm2 logs komari')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 系统日志</button>
             <button onclick="sendCommand('pm2 logs tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 隧道日志</button>
             <button onclick="sendCommand('clear')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-500 ml-auto">🗑️ 清屏</button>
@@ -96,7 +97,16 @@ const DEFAULT_HTML = `
         const socket = io();
         const output = document.getElementById('output');
         const input = document.getElementById('cmdInput');
-        document.addEventListener('click', (e) => { if(e.target.tagName !== 'BUTTON' && e.target.tagName !== 'TEXTAREA') input.focus(); });
+        
+        // 【核心修复】：解决鼠标划选文本时立刻被抢走焦点的问题
+        document.addEventListener('mouseup', (e) => { 
+            // 如果用户选定了任何文字，直接退出，不要抢焦点
+            if (window.getSelection().toString().length > 0) return;
+            // 如果点的是按钮或代码编辑器，也不要抢焦点
+            if(e.target.tagName !== 'BUTTON' && e.target.tagName !== 'TEXTAREA') {
+                input.focus();
+            }
+        });
 
         const ansiColors = { 30:'#71717a', 31:'#ef4444', 32:'#10b981', 33:'#eab308', 34:'#3b82f6', 35:'#d946ef', 36:'#06b6d4', 37:'#f4f4f5', 90:'#a1a1aa', 91:'#f87171', 92:'#34d399', 93:'#facc15' };
 
@@ -197,8 +207,7 @@ module.exports = {
         socket.on('command', (cmd) => {
             let finalCmd = cmd;
             
-            // 【核心魔法】：一键替换二进制包并热重启
-            // 如果官方后续更改了包名结构，你可以在控制台直接热修改这段 JS 逻辑！
+            // Komari 内核一键更新
             if (cmd === 'update komari') {
                 finalCmd = `
                     echo "Fetching latest Komari release info..." &&
@@ -212,6 +221,17 @@ module.exports = {
                     /app/node_modules/.bin/pm2 restart komari
                 `;
             } 
+            // 【新增】：CF Tunnel 一键热更新
+            else if (cmd === 'update tunnel') {
+                finalCmd = `
+                    echo "Fetching latest cloudflared release..." &&
+                    curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/cloudflared_new &&
+                    chmod +x /tmp/cloudflared_new &&
+                    mv /tmp/cloudflared_new /app/cloudflared &&
+                    echo "Restarting tunnel service..." &&
+                    /app/node_modules/.bin/pm2 restart tunnel
+                `;
+            }
             else if (cmd.startsWith('pm2')) finalCmd = '/app/node_modules/.bin/' + cmd;
 
             const proc = spawn('bash', ['-c', finalCmd], { cwd: '/app' });
@@ -261,13 +281,12 @@ process.on('HOT_RELOAD_LOGIC', () => {
 server.listen(7860, '0.0.0.0', () => console.log('[Info] Bootstrapper Online. Guarding port 7860.'));
 EOF
 
-
 # ==========================================
-# 4. 核心业务守护进程 (放入后台静默执行)
+# 3. 核心业务守护进程 (放入后台静默执行)
 # ==========================================
 (
     echo "[Info] Starting background processes..."
-    
+
     # 1. 动态拉取 Komari 核心二进制包
     if [ ! -f "/app/komari_bin" ]; then
         echo "[Info] Downloading initial Komari binary..."
@@ -297,6 +316,6 @@ EOF
 ) >/tmp/startup.log 2>&1 &
 
 # ==========================================
-# 5. 前台挂载终极控制台，扛住 HF 探针
+# 4. 前台挂载终极控制台，扛住 HF 探针
 # ==========================================
 exec node /app/bootstrapper.js
