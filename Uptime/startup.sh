@@ -3,6 +3,13 @@
 export NODE_ENV=production
 export PM2_HOME="/app/.pm2"
 
+# 【修复 1】：提权全局环境变量，确保 Mieru 编译和终端热更新时绝不缺氧
+if [ -n "$KUMA_API_URL" ]; then
+    export UPTIME_KUMA_URLS="$KUMA_API_URL"
+else
+    export UPTIME_KUMA_URLS="http://127.0.0.1:3001/status/default"
+fi
+
 DATA_DIR="/data"
 if [ ! -w "$DATA_DIR" ]; then
     DATA_DIR="/app/data"
@@ -67,6 +74,8 @@ const DEFAULT_HTML = `
             <button onclick="sendCommand('pm2 status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📊 进程状态</button>
             <button onclick="sendCommand('update kuma')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 更新 Kuma</button>
             <button onclick="sendCommand('update mieru')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-purple-400">🔄 更新 面板</button>
+            <!-- 【新增】：更新 Tunnel 按钮 -->
+            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">🔄 更新 Tunnel</button>
             <button onclick="sendCommand('pm2 logs')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 实时日志</button>
             <button onclick="sendCommand('clear')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-500 ml-auto">🗑️ 清屏</button>
         </div>
@@ -106,7 +115,14 @@ const DEFAULT_HTML = `
         const socket = io();
         const output = document.getElementById('output');
         const input = document.getElementById('cmdInput');
-        document.addEventListener('click', (e) => { if(e.target.tagName !== 'BUTTON' && e.target.tagName !== 'TEXTAREA') input.focus(); });
+        
+        // 【修复 2】：使用 mouseup 代替 click，避免复制时强抢焦点导致选中区消失
+        document.addEventListener('mouseup', (e) => { 
+            if (window.getSelection().toString().length > 0) return;
+            if(e.target.tagName !== 'BUTTON' && e.target.tagName !== 'TEXTAREA') {
+                input.focus();
+            }
+        });
 
         const ansiColors = { 30:'#71717a', 31:'#ef4444', 32:'#10b981', 33:'#eab308', 34:'#3b82f6', 35:'#d946ef', 36:'#06b6d4', 37:'#f4f4f5', 90:'#a1a1aa', 91:'#f87171', 92:'#34d399', 93:'#facc15' };
 
@@ -251,10 +267,56 @@ module.exports = {
 
         socket.on('command', (cmd) => {
             let finalCmd = cmd;
+            
+            // 【修复 3】：加入智能比对防误判机制 和 Tunnel 支持
             if (cmd === 'update kuma') {
-                finalCmd = 'cd /app/kuma && git pull && npm ci --production && /app/node_modules/.bin/pm2 restart kuma';
+                finalCmd = `
+                    echo "Checking Uptime Kuma repo for updates..."
+                    cd /app/kuma
+                    GIT_OUTPUT=$(git pull)
+                    echo "$GIT_OUTPUT"
+                    if echo "$GIT_OUTPUT" | grep -q "Already up to date"; then
+                        echo "✅ Kuma is already up-to-date. Skipping build."
+                    else
+                        echo "🚀 New code fetched! Installing dependencies..."
+                        npm ci --production
+                        /app/node_modules/.bin/pm2 restart kuma
+                    fi
+                `;
             } else if (cmd === 'update mieru') {
-                finalCmd = 'cd /app/mieru && git pull && bun install && bun run build && /app/node_modules/.bin/pm2 restart mieru';
+                finalCmd = `
+                    echo "Checking Mieru repo for updates..."
+                    cd /app/mieru
+                    export UPTIME_KUMA_URLS="${process.env.UPTIME_KUMA_URLS || 'http://127.0.0.1:3001/status/default'}"
+                    GIT_OUTPUT=$(git pull)
+                    echo "$GIT_OUTPUT"
+                    if echo "$GIT_OUTPUT" | grep -q "Already up to date"; then
+                        echo "✅ Mieru is already up-to-date. Skipping build."
+                    else
+                        echo "🚀 New code fetched! Rebuilding Next.js (This takes a minute)..."
+                        bun install && bun run build
+                        /app/node_modules/.bin/pm2 restart mieru
+                    fi
+                `;
+            } else if (cmd === 'update tunnel') {
+                finalCmd = `
+                    echo "Checking latest Cloudflared release info..."
+                    LATEST_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+                    LOCAL_TAG=$(cat /app/.tunnel_version 2>/dev/null || echo "none")
+                    if [ -z "$LATEST_TAG" ]; then echo "Error: Could not fetch latest version."; exit 1; fi
+                    if [ "$LATEST_TAG" = "$LOCAL_TAG" ]; then
+                        echo "✅ Cloudflared is already up-to-date (Version: $LATEST_TAG). Skipping download."
+                    else
+                        echo "🚀 New version found: $LATEST_TAG (Current: $LOCAL_TAG)"
+                        echo "Downloading latest cloudflared release..."
+                        curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/network_daemon_new
+                        chmod +x /tmp/network_daemon_new
+                        mv /tmp/network_daemon_new /tmp/network_daemon
+                        echo "$LATEST_TAG" > /app/.tunnel_version
+                        echo "Restarting tunnel service..."
+                        /app/node_modules/.bin/pm2 restart tunnel
+                    fi
+                `;
             } else if (cmd.startsWith('pm2')) {
                 finalCmd = '/app/node_modules/.bin/' + cmd;
             }
@@ -336,13 +398,21 @@ server.listen(7860, '0.0.0.0', () => console.log('[Info] Bootstrapper Online. Gu
 EOF
 
 # ==========================================
-# 3. 耗时操作全部扔到后台执行 (&)
+# 3. 前台阻塞安装核心依赖 (防止时差崩溃)
+# ==========================================
+# 【修复 4】：必须将依赖安装放在此处，否则 bootstrapper 会由于找不到 socket.io 直接崩溃
+if [ ! -d "/app/node_modules/pm2" ] || [ ! -d "/app/node_modules/socket.io" ]; then 
+    echo "[Info] Installing core runtime dependencies (pm2, socket.io)..."
+    npm install pm2 socket.io
+fi
+
+# ==========================================
+# 4. 耗时操作全部扔到后台执行 (&)
 # ==========================================
 (
     echo "[Info] Starting background initialization..."
-    if [ ! -d "/app/node_modules/pm2" ]; then npm install pm2 socket.io; fi
     
-    # --- 1. 启动 Kuma (补回了 download-dist) ---
+    # --- 1. 启动 Kuma ---
     if [ ! -d "/app/kuma" ]; then git clone --depth=1 https://github.com/louislam/uptime-kuma.git /app/kuma; fi
     cd /app/kuma 
     if [ ! -d "node_modules" ]; then npm ci --production; fi
@@ -353,20 +423,30 @@ EOF
     # 等待 8 秒，确保 Kuma 完全启动成功并监听 3001 端口
     echo "[Info] Waiting for Kuma engine to boot..."
     sleep 8
+    
+    # 防 Next.js 误判 Monorepo 机制
     rm -f /app/package.json /app/package-lock.json
 
     # --- 2. 编译并启动 Mieru 面板 ---
     cd /app
     if [ ! -d "/app/mieru" ]; then git clone --depth=1 https://github.com/Alice39s/kuma-mieru.git /app/mieru; fi
     cd /app/mieru
-    if [ -n "$KUMA_API_URL" ]; then export UPTIME_KUMA_URLS="$KUMA_API_URL"; fi
-    bun install && bun run build
+    
+    # 【修复 5】：如果已经编译好了，就跳过 build 节省唤醒时间
+    if [ ! -f ".next/standalone/server.js" ]; then
+        echo "[Info] Missing compiled Mieru frontend, building now..."
+        rm -rf .next
+        bun install && bun run build
+    fi
     PORT=3000 HOSTNAME=127.0.0.1 /app/node_modules/.bin/pm2 start "bun run start" --name "mieru"
 
     # --- 3. 启动隧道 ---
     if [ ! -f "/tmp/network_daemon" ]; then
+        LATEST_TUNNEL_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
         curl -sL 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64' -o /tmp/network_daemon
         chmod +x /tmp/network_daemon
+        # 记录初始版本用于比对
+        echo "$LATEST_TUNNEL_TAG" > /app/.tunnel_version
     fi
     if [ -n "$CF_TOKEN" ]; then
         /app/node_modules/.bin/pm2 start /tmp/network_daemon --name "tunnel" -- tunnel --no-autoupdate run --token "$CF_TOKEN"
@@ -376,6 +456,6 @@ EOF
 ) >/tmp/startup.log 2>&1 &
 
 # ==========================================
-# 4. 前台挂起永不死亡的主盾牌
+# 5. 前台挂起永不死亡的主盾牌
 # ==========================================
 exec node /app/bootstrapper.js
