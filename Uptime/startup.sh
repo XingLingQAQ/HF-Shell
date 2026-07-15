@@ -234,24 +234,55 @@ if (!fs.existsSync(uiFilePath)) fs.writeFileSync(uiFilePath, DEFAULT_HTML);
 let previewHTML = fs.readFileSync(uiFilePath, 'utf8');
 
 module.exports = {
-    // 暴露 HTTP 路由处理函数
-    handleHttp: function(req, res) {
-        if (req.url === '/') {
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(fs.readFileSync(uiFilePath, 'utf8'));
+        handleHttp: function(req, res) {
+        // 【核心防御】：剥离 Uptime 监控软件自动添加的 ?_=12345 缓存时间戳
+        const path = req.url.split('?')[0];
+
+        if (path === '/') { 
+            res.writeHead(200, { 'Content-Type': 'text/html' }); 
+            res.end(fs.readFileSync(uiFilePath, 'utf8')); 
         } 
-        else if (req.url === '/preview') {
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(previewHTML);
-        }
-        // 如果你想在网页加个新功能，可以直接在这里动态写：
-        else if (req.url === '/api/ping') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: "backend is fully hot-swappable!" }));
-        }
-        else {
-            res.writeHead(404);
-            res.end();
+        else if (path === '/preview') { 
+            res.writeHead(200, { 'Content-Type': 'text/html' }); 
+            res.end(previewHTML); 
+        } 
+        // 专为 Kuma/Mieru 版本准备的保活探针
+        else if (path === '/api/ping') { 
+            res.writeHead(200, { 'Content-Type': 'application/json' }); 
+            res.end(JSON.stringify({ status: "Kuma nexus terminal is alive!" })); 
+        } 
+        // 赛博朋克风自定义 404 页面
+        else { 
+            res.writeHead(404, { 'Content-Type': 'text/html' }); 
+            res.end(`
+                <!DOCTYPE html>
+                <html lang="zh-CN">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>404 - Access Denied</title>
+                    <style>
+                        body { background-color: #050505; color: #10b981; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; }
+                        .container { text-align: center; border: 1px solid #27272a; padding: 3rem; border-radius: 12px; background: #0a0a0a; box-shadow: 0 0 30px rgba(16,185,129,0.05); }
+                        h1 { font-size: 4rem; margin: 0; text-shadow: 0 0 15px rgba(16,185,129,0.5); letter-spacing: 5px; }
+                        p { color: #a1a1aa; font-size: 1.2rem; margin-top: 10px; }
+                        .glitch { position: relative; }
+                        .glitch::before, .glitch::after { content: "404"; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #0a0a0a; }
+                        .glitch::before { left: 2px; text-shadow: -1px 0 red; clip: rect(24px, 550px, 90px, 0); animation: glitch-anim-2 3s infinite linear alternate-reverse; }
+                        .glitch::after { left: -2px; text-shadow: -1px 0 blue; clip: rect(85px, 550px, 140px, 0); animation: glitch-anim 2.5s infinite linear alternate-reverse; }
+                        a { display: inline-block; margin-top: 30px; color: #3b82f6; text-decoration: none; border: 1px solid #3b82f6; padding: 10px 20px; border-radius: 5px; transition: all 0.3s; }
+                        a:hover { background: #3b82f6; color: #050505; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1 class="glitch">404</h1>
+                        <p>>_ ENDPOINT_NOT_FOUND</p>
+                        <p style="font-size: 0.9rem; color: #71717a;">NEXUS CORE // ROUTE_REFUSED</p>
+                        <a href="/">[ Return to Terminal ]</a>
+                    </div>
+                </body>
+                </html>
+            `); 
         }
     },
 
