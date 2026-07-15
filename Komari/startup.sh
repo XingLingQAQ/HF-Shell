@@ -262,18 +262,23 @@ server.listen(7860, '0.0.0.0', () => console.log('[Info] Bootstrapper Online. Gu
 EOF
 
 # ==========================================
-# 3. 核心业务守护进程 (放入后台静默执行)
+# 3. 阻塞式安装核心依赖 (必须在前台，否则触发竞态崩溃)
+# ==========================================
+echo "[Info] Checking core dependencies..."
+if [ ! -d "/app/node_modules/socket.io" ] || [ ! -d "/app/node_modules/pm2" ]; then 
+    echo "[Info] Installing pm2 and socket.io..."
+    npm install pm2 socket.io 
+fi
+
+# ==========================================
+# 4. 核心业务守护进程 (放入后台静默执行)
 # ==========================================
 (
     echo "[Info] Starting background processes..."
-    if [ ! -d "/app/node_modules/pm2" ]; then 
-        npm install pm2 socket.io 
-    fi
-
+    
     # 1. 动态拉取 Komari 核心二进制包
     if [ ! -f "/app/komari_bin" ]; then
         echo "[Info] Downloading initial Komari binary..."
-        # 默认拉取 AMD64 架构包
         LATEST_URL=$(curl -s https://api.github.com/repos/komari-monitor/komari/releases/latest | grep "browser_download_url.*linux-amd64" | cut -d '"' -f 4)
         if [ -n "$LATEST_URL" ]; then
             curl -sL "$LATEST_URL" -o /app/komari_bin
@@ -300,6 +305,6 @@ EOF
 ) >/tmp/startup.log 2>&1 &
 
 # ==========================================
-# 4. 前台挂载终极控制台，扛住 HF 探针
+# 5. 前台挂载终极控制台，扛住 HF 探针
 # ==========================================
 exec node /app/bootstrapper.js
