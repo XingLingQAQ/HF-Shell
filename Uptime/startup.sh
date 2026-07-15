@@ -234,7 +234,7 @@ if (!fs.existsSync(uiFilePath)) fs.writeFileSync(uiFilePath, DEFAULT_HTML);
 let previewHTML = fs.readFileSync(uiFilePath, 'utf8');
 
 module.exports = {
-    handleHttp: function(req, res) {
+        handleHttp: function(req, res) {
         // 【正规工业级防御】：使用 Node.js 原生 URL 模块，彻底剥离绝对域名和各类查询参数
         let path = '/';
         try {
