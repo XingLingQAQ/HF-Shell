@@ -234,10 +234,19 @@ if (!fs.existsSync(uiFilePath)) fs.writeFileSync(uiFilePath, DEFAULT_HTML);
 let previewHTML = fs.readFileSync(uiFilePath, 'utf8');
 
 module.exports = {
-        handleHttp: function(req, res) {
-        // 【核心防御】：剥离 Uptime 监控软件自动添加的 ?_=12345 缓存时间戳
-        const path = req.url.split('?')[0];
+    handleHttp: function(req, res) {
+        // 【正规工业级防御】：使用 Node.js 原生 URL 模块，彻底剥离绝对域名和各类查询参数
+        let path = '/';
+        try {
+            // 第二个参数提供基础域名作为 fallback，确保能完美解析各种畸形 req.url
+            const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+            path = parsedUrl.pathname; 
+        } catch (e) {
+            // 极低概率的解析崩溃兜底
+            path = req.url.split('?')[0]; 
+        }
 
+        // 此时的 path 绝对是纯净的 '/' 或 '/api/ping' 等格式
         if (path === '/') { 
             res.writeHead(200, { 'Content-Type': 'text/html' }); 
             res.end(fs.readFileSync(uiFilePath, 'utf8')); 
@@ -246,12 +255,12 @@ module.exports = {
             res.writeHead(200, { 'Content-Type': 'text/html' }); 
             res.end(previewHTML); 
         } 
-        // 专为 Kuma/Mieru 版本准备的保活探针
+        // 专为测活准备的纯净接口
         else if (path === '/api/ping') { 
             res.writeHead(200, { 'Content-Type': 'application/json' }); 
             res.end(JSON.stringify({ status: "Kuma nexus terminal is alive!" })); 
         } 
-        // 赛博朋克风自定义 404 页面
+        // 【严格的 404 机制】：其他乱七八糟的路径，正规地返回 404 状态码和赛博朋克页面
         else { 
             res.writeHead(404, { 'Content-Type': 'text/html' }); 
             res.end(`
