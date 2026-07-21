@@ -1,7 +1,17 @@
 #!/bin/bash
 
 export NODE_ENV=production
+export NEXT_TELEMETRY_DISABLED=1
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 export PM2_HOME="/app/.pm2"
+
+# Node < 22 时尽量升到 22（减轻 yarn/wrangler engines 干扰；TS7 才是主因）
+_NODE_MAJ=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)
+if [ "${_NODE_MAJ:-0}" -lt 22 ]; then
+  echo "[Info] Node $(node -v 2>/dev/null) < 22, trying Node 22 LTS into /usr/local..."
+  curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz"     | tar -xJ -C /usr/local --strip-components=1 2>/dev/null && hash -r && echo "[Info] Node now $(node -v)" || echo "[Warn] node22 install skipped"
+fi
 
 # 【修复 1】：提权全局环境变量，确保 Mieru 编译和终端热更新时绝不缺氧
 if [ -n "$KUMA_API_URL" ]; then
@@ -74,6 +84,7 @@ const DEFAULT_HTML = `
             <button onclick="sendCommand('pm2 status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📊 进程状态</button>
             <button onclick="sendCommand('update kuma')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 更新 Kuma</button>
             <button onclick="sendCommand('update mieru')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-purple-400">🔄 更新 面板</button>
+            <button onclick="sendCommand('fix mieru')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-amber-400">🔧 修复 Mieru</button>
             <!-- 【新增】：更新 Tunnel 按钮 -->
             <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">🔄 更新 Tunnel</button>
             <button onclick="sendCommand('pm2 logs')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 实时日志</button>
@@ -82,7 +93,7 @@ const DEFAULT_HTML = `
 
         <div id="output" class="flex-1 p-5 overflow-auto text-sm font-mono text-zinc-300">
             <div class="text-emerald-400 text-xl font-bold mb-4 tracking-widest">N E X U S // T E R M I N A L</div>
-            <div class="text-zinc-400 mb-6">Type 'help' for commands.<br><span class="text-yellow-400">⚠️ System supports Full-Stack Hot Reload.</span></div>
+            <div class="text-zinc-400 mb-6">Type 'help' / fix mieru.<br><span class="text-yellow-400">⚠️ Mieru needs TS5.8 + standalone (not TS7).</span></div>
         </div>
 
         <div class="px-5 py-4 bg-[#0a0a0a] border-t border-zinc-800 flex items-center z-20">
@@ -323,20 +334,49 @@ module.exports = {
                         /app/node_modules/.bin/pm2 restart kuma
                     fi
                 `;
-            } else if (cmd === 'update mieru') {
+            } else if (cmd === 'update mieru' || cmd === 'fix mieru') {
+                // 彻底修复：Next16 + typescript@7 会导致 build worker 崩（id undefined），无 standalone
+                // 不再因 git "Already up to date" 跳过 build；缺 standalone 必须重建
                 finalCmd = `
-                    echo "Checking Mieru repo for updates..."
+                    set -e
+                    echo "=== update/fix mieru (pin TS5.8 + force standalone) ==="
                     cd /app/mieru
+                    export NODE_ENV=production
+                    export NEXT_TELEMETRY_DISABLED=1
                     export UPTIME_KUMA_URLS="${process.env.UPTIME_KUMA_URLS || 'http://127.0.0.1:3001/status/default'}"
-                    GIT_OUTPUT=$(git pull)
-                    echo "$GIT_OUTPUT"
-                    if echo "$GIT_OUTPUT" | grep -q "Already up to date"; then
-                        echo "✅ Mieru is already up-to-date. Skipping build."
-                    else
-                        echo "🚀 New code fetched! Rebuilding Next.js (This takes a minute)..."
-                        bun install && bun run build
-                        /app/node_modules/.bin/pm2 restart mieru
+                    export NODE_OPTIONS="\${NODE_OPTIONS:---max-old-space-size=1536}"
+                    unset VERCEL
+                    if [ -d .git ]; then
+                      echo "git pull..."
+                      git pull || true
                     fi
+                    echo "Pin typescript@5.8.3 (Next 16 breaks on TS 7)..."
+                    bun remove typescript 2>/dev/null || true
+                    bun add -d typescript@5.8.3
+                    node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('package.json','utf8'));if(j.devDependencies){j.devDependencies.typescript='5.8.3';fs.writeFileSync('package.json',JSON.stringify(j,null,2)+'\\n');console.log('package.json ts=',j.devDependencies.typescript);}" 2>/dev/null || true
+                    bun install || true
+                    node -e "try{console.log('runtime ts',require('typescript/package.json').version)}catch(e){console.log('ts missing')}"
+                    NEED_BUILD=1
+                    if [ -f .next/standalone/server.js ] && [ "\$1" != "force" ]; then
+                      # 仍强制重建更稳；需要跳过可设 SKIP_MIERU_BUILD=1
+                      if [ "\${SKIP_MIERU_BUILD:-0}" = "1" ]; then NEED_BUILD=0; fi
+                    fi
+                    if [ "\$NEED_BUILD" = "1" ]; then
+                      echo "Building Next.js standalone..."
+                      rm -rf .next
+                      bun run generate
+                      npx next build
+                    fi
+                    if [ ! -f .next/standalone/server.js ]; then
+                      echo "FAIL: .next/standalone/server.js still missing"
+                      ls -la .next 2>/dev/null | head -30 || true
+                      exit 1
+                    fi
+                    ls -la .next/standalone/server.js
+                    /app/node_modules/.bin/pm2 restart mieru || /app/node_modules/.bin/pm2 start "bun run start" --name mieru --cwd /app/mieru
+                    sleep 2
+                    /app/node_modules/.bin/pm2 status mieru
+                    echo "done"
                 `;
             } else if (cmd === 'update tunnel') {
                 finalCmd = `
@@ -468,17 +508,36 @@ fi
     rm -f /app/package.json /app/package-lock.json
 
     # --- 2. 编译并启动 Mieru 面板 ---
+    # 根因：Next 16 + typescript@7 → build worker 崩（id undefined）→ 无 standalone → start 必挂
     cd /app
     if [ ! -d "/app/mieru" ]; then git clone --depth=1 https://github.com/Alice39s/kuma-mieru.git /app/mieru; fi
     cd /app/mieru
-    
-    # 【修复 5】：如果已经编译好了，就跳过 build 节省唤醒时间
+    export NODE_ENV=production
+    export NEXT_TELEMETRY_DISABLED=1
+    export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}"
+    unset VERCEL
+
     if [ ! -f ".next/standalone/server.js" ]; then
-        echo "[Info] Missing compiled Mieru frontend, building now..."
+        echo "[Info] Missing standalone, pin TS 5.8.3 and build..."
+        bun remove typescript 2>/dev/null || true
+        bun add -d typescript@5.8.3 || true
+        # 防止 package.json 里 ^7 再次拉回 TS7
+        node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('package.json','utf8'));if(j.devDependencies){j.devDependencies.typescript='5.8.3';fs.writeFileSync('package.json',JSON.stringify(j,null,2)+'\n');}" 2>/dev/null || true
+        bun install || true
+        node -e "try{console.log('[Info] typescript',require('typescript/package.json').version)}catch(e){console.log('[Warn] ts missing')}" || true
         rm -rf .next
-        bun install && bun run build
+        # generate + next build（不要用会装 TS7 的不完整路径）
+        bun run generate
+        npx next build || { echo "[Error] next build failed"; ls -la .next 2>/dev/null | head -20; }
+    else
+        echo "[Info] Mieru standalone already present, skip build"
     fi
-    PORT=3000 HOSTNAME=127.0.0.1 /app/node_modules/.bin/pm2 start "bun run start" --name "mieru"
+
+    if [ -f ".next/standalone/server.js" ]; then
+        PORT=3000 HOSTNAME=127.0.0.1 /app/node_modules/.bin/pm2 start "bun run start" --name "mieru" --cwd /app/mieru
+    else
+        echo "[Error] Still no .next/standalone/server.js — mieru not started. Use panel: fix mieru"
+    fi
 
     # --- 3. 启动隧道 ---
     if [ ! -f "/tmp/network_daemon" ]; then
