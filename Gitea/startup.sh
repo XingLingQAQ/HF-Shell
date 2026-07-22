@@ -222,13 +222,13 @@ cat << 'EOFUI' > /app/terminal-ui.html
             }
         });
 
-        const ansiColors = { 30:'#71717a', 31:'#ef4444', 32:'#10b981', 33:'#eab308', 34:'#3b82f6', 35:'#d946ef', 36:'#06b6d4', 37:'#f4f4f5', 90:'#a1a1aa', 91:'#f87171', 92:'#34d399', 93:'#facc15' };
+                const ansiColors = { 30:'#71717a', 31:'#ef4444', 32:'#10b981', 33:'#eab308', 34:'#3b82f6', 35:'#d946ef', 36:'#06b6d4', 37:'#f4f4f5', 90:'#a1a1aa', 91:'#f87171', 92:'#34d399', 93:'#facc15' };
 
         function parseAnsi(text) {
             let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             let state = { bold: false, color: null };
             let openSpans = 0;
-            html = html.replace(/\\x1b\\[([0-9;]*)m/g, (match, codes) => {
+            html = html.replace(/\x1b\[([0-9;]*)m/g, (match, codes) => {
                 codes.split(';').forEach(c => {
                     let code = parseInt(c);
                     if (code === 0 || isNaN(code)) { state.bold = false; state.color = null; }
@@ -259,15 +259,16 @@ cat << 'EOFUI' > /app/terminal-ui.html
         }
 
         socket.on('output', (data) => appendText(data));
-        socket.on('error', (data) => appendText('\\x1b[31m' + data + '\\x1b[0m'));
-        socket.on('system', (data) => appendText('\\x1b[36m' + data + '\\n\\x1b[0m'));
-        
+        socket.on('error', (data) => appendText('\x1b[31m' + data + '\x1b[0m'));
+        socket.on('system', (data) => appendText('\x1b[36m' + data + '\n\x1b[0m'));
+
         function sendCommand(val) {
             if (!val) return;
-            appendText('\\n\\x1b[32m\\x1b[1madmin@nexus:~$\\x1b[0m ' + val + '\\n');
+            appendText('\n\x1b[32m\x1b[1madmin@nexus:~$\x1b[0m ' + val + '\n');
             if (val === 'clear') { output.innerHTML = ''; return; }
             socket.emit('command', val);
         }
+
 
         input.addEventListener('keypress', function (e) {
             if (e.key === 'Enter') { sendCommand(this.value.trim()); this.value = ''; }
