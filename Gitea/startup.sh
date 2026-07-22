@@ -23,6 +23,20 @@ mkdir -p /app /tmp /opt/gitea "$GITEA_WORK_DIR" "$GITEA_CUSTOM/conf" /app/.pm2
 chmod 777 /tmp /app 2>/dev/null || true
 cd /app
 
+# Gitea 1.27+ 禁止 root 运行：创建 git 用户并接管数据目录
+if ! id git >/dev/null 2>&1; then
+  useradd -m -u 1000 -s /bin/bash git 2>/dev/null     || adduser --disabled-password --gecos "" --uid 1000 git 2>/dev/null     || true
+fi
+# 保证 uid 可用（部分镜像 useradd 失败时用 nobody 不行，再试一次）
+if ! id git >/dev/null 2>&1; then
+  echo "[startup] WARN: cannot create git user, will set GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=1"
+  export GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=1
+else
+  chown -R git:git "$GITEA_WORK_DIR" /opt/gitea 2>/dev/null || true
+  # gitea 二进制需对 git 可执行
+  chmod 755 /opt/gitea/gitea 2>/dev/null || true
+fi
+
 log() { echo "[startup] $*"; }
 
 ensure_gitea() {
@@ -61,7 +75,7 @@ ensure_gitea_config() {
   cat > "$conf" << EOF
 APP_NAME = Gitea
 RUN_MODE = prod
-RUN_USER = root
+RUN_USER = git
 
 [server]
 PROTOCOL = http
@@ -513,19 +527,46 @@ export GITEA_WORK_DIR GITEA_CUSTOM
   $PM2 delete tunnel 2>/dev/null || true
 
   if [ -x /opt/gitea/gitea ]; then
-    # 用 shell 包一层，保证环境变量与工作目录正确；RUN_USER=root 已在 app.ini
+    # 以 git 用户运行（Gitea 1.27+ 禁止 root）
+    chown -R git:git "$GITEA_WORK_DIR" /opt/gitea 2>/dev/null || true
+    # 若已有 app.ini 仍是 RUN_USER=root，改成 git
+    if [ -f "$GITEA_WORK_DIR/custom/conf/app.ini" ]; then
+      sed -i 's/^RUN_USER *=.*/RUN_USER = git/' "$GITEA_WORK_DIR/custom/conf/app.ini" 2>/dev/null || true
+    fi
     cat > /opt/gitea/run.sh << 'RUNSH'
 #!/bin/bash
 set -u
 export GITEA_WORK_DIR="${GITEA_WORK_DIR:-/data/gitea}"
 export GITEA_CUSTOM="${GITEA_CUSTOM:-/data/gitea/custom}"
-export USER=root
-export HOME=/root
-cd "$GITEA_WORK_DIR"
-exec /opt/gitea/gitea web \
-  --config "${GITEA_WORK_DIR}/custom/conf/app.ini" \
-  --work-path "${GITEA_WORK_DIR}" \
-  --custom-path "${GITEA_CUSTOM}"
+export USER=git
+export HOME=/home/git
+export USERNAME=git
+# 仅当无法创建 git 用户时的危险兜底（容器内）
+if [ "$(id -u)" = "0" ] && ! id git >/dev/null 2>&1; then
+  export GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=true
+fi
+cd "$GITEA_WORK_DIR" || exit 1
+if id git >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+  # drop privileges: runuser preferred, else su
+  if command -v runuser >/dev/null 2>&1; then
+    exec runuser -u git -- env \
+      HOME=/home/git USER=git USERNAME=git \
+      GITEA_WORK_DIR="$GITEA_WORK_DIR" GITEA_CUSTOM="$GITEA_CUSTOM" \
+      /opt/gitea/gitea web \
+        --config "$GITEA_WORK_DIR/custom/conf/app.ini" \
+        --work-path "$GITEA_WORK_DIR" \
+        --custom-path "$GITEA_CUSTOM"
+  else
+    exec su -s /bin/bash git -c "export HOME=/home/git USER=git GITEA_WORK_DIR='$GITEA_WORK_DIR' GITEA_CUSTOM='$GITEA_CUSTOM'; cd '$GITEA_WORK_DIR' && exec /opt/gitea/gitea web --config '$GITEA_WORK_DIR/custom/conf/app.ini' --work-path '$GITEA_WORK_DIR' --custom-path '$GITEA_CUSTOM'"
+  fi
+else
+  # last resort only if no git user
+  export GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=true
+  exec /opt/gitea/gitea web \
+    --config "${GITEA_WORK_DIR}/custom/conf/app.ini" \
+    --work-path "${GITEA_WORK_DIR}" \
+    --custom-path "${GITEA_CUSTOM}"
+fi
 RUNSH
     chmod +x /opt/gitea/run.sh
     $PM2 start /opt/gitea/run.sh \
