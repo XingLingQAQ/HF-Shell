@@ -132,14 +132,20 @@ cat << 'EOFUI' > /app/terminal-ui.html
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         body { background-color: #050505; color: #a1a1aa; font-family: 'Fira Code', monospace; }
-        .crt::before { content: " "; display: block; position: absolute; top: 0; left: 0; bottom: 0; right: 0; background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06)); z-index: 2; background-size: 100% 2px, 3px 100%; pointer-events: none; }
+        .crt::before { content: " "; display: block; position: absolute; top: 0; left: 0; bottom: 0; right: 0; background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06)); z-index: 2; background-size: 100% 2px, 3px 100%; pointer-events: none !important; !important; }
         #output { scroll-behavior: smooth; white-space: pre; }
         #output::-webkit-scrollbar { width: 8px; height: 8px; }
         #output::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
         .prompt-glow { text-shadow: 0 0 10px rgba(16, 185, 129, 0.5); }
-        .btn-action { transition: all 0.2s; }
+        .btn-action { transition: all 0.2s; position: relative; z-index: 30; cursor: pointer; }
         .btn-action:hover { transform: translateY(-1px); background-color: #27272a; color: #fff; }
-    </style>
+    
+        /* 兜底：不依赖 Tailwind CDN */
+        #editorOverlay[style*="display: none"], #editorOverlay.hidden { display: none !important; pointer-events: none !important; }
+        #editorOverlay { pointer-events: auto; }
+        button, .btn-action, input, textarea { pointer-events: auto !important; position: relative; z-index: 40; }
+        .crt::before { pointer-events: none !important; z-index: 1 !important; }
+        </style>
 </head>
 <body class="h-screen w-screen overflow-hidden crt flex items-center justify-center p-2 sm:p-6">
     <div class="w-full h-full max-w-6xl bg-[#0a0a0a] border border-zinc-800 rounded-xl shadow-2xl flex flex-col relative z-10 overflow-hidden">
@@ -183,7 +189,7 @@ cat << 'EOFUI' > /app/terminal-ui.html
         </div>
 
         <!-- 纯干货全栈热编辑器 -->
-        <div id="editorOverlay" class="hidden absolute inset-0 bg-black/95 z-50 flex flex-col p-4 sm:p-8 backdrop-blur-sm">
+        <div id="editorOverlay" class="absolute inset-0 bg-black/95 z-50 flex flex-col p-4 sm:p-8 backdrop-blur-sm" style="display:none">
             <div class="flex justify-between items-center mb-4">
                 <div>
                     <h2 id="editorTitle" class="text-emerald-400 text-lg font-bold tracking-widest">LIVE EDITOR</h2>
@@ -197,7 +203,7 @@ cat << 'EOFUI' > /app/terminal-ui.html
             
             <div class="mt-6 flex flex-wrap gap-4" id="actionButtons">
                 <!-- HTML 模式才显示预览按钮 -->
-                <button id="btnPreview" onclick="previewCode()" class="hidden bg-blue-600/20 text-blue-400 border border-blue-600/50 hover:bg-blue-600/40 px-6 py-3 rounded-lg text-sm font-bold transition">1. 挂载到 /preview</button>
+                <button id="btnPreview" onclick="previewCode()" style="display:none" class="hidden bg-blue-600/20 text-blue-400 border border-blue-600/50 hover:bg-blue-600/40 px-6 py-3 rounded-lg text-sm font-bold transition">1. 挂载到 /preview</button>
                 <button onclick="deployCode()" class="bg-emerald-600/20 text-emerald-400 border border-emerald-600/50 hover:bg-emerald-600/40 px-6 py-3 rounded-lg text-sm font-bold transition">🔥 热部署覆盖源码</button>
             </div>
         </div>
@@ -274,25 +280,25 @@ cat << 'EOFUI' > /app/terminal-ui.html
                 document.getElementById('editorTitle').innerText = 'UI FRONTEND EDITOR';
                 document.getElementById('editorDesc').innerText = 'Modify the terminal interface on the fly.';
                 document.getElementById('editorTitle').className = 'text-emerald-400 text-lg font-bold tracking-widest';
-                document.getElementById('btnPreview').classList.remove('hidden');
+                document.getElementById('btnPreview').style.display = 'inline-block'; document.getElementById('btnPreview').classList.remove('hidden');
                 socket.emit('get-source-html');
             } else {
                 document.getElementById('editorTitle').innerText = 'BACKEND LOGIC EDITOR';
                 document.getElementById('editorDesc').innerText = 'Modify Node.js routing and socket events (DANGER!).';
                 document.getElementById('editorTitle').className = 'text-purple-400 text-lg font-bold tracking-widest';
-                document.getElementById('btnPreview').classList.add('hidden');
+                document.getElementById('btnPreview').style.display = 'none'; document.getElementById('btnPreview').classList.add('hidden');
                 socket.emit('get-source-js');
             }
         }
-        function closeEditor() { document.getElementById('editorOverlay').classList.add('hidden'); }
+        function closeEditor() { document.getElementById('editorOverlay').style.display = 'none'; }
         
         socket.on('source-code-html', (code) => {
             document.getElementById('editorCode').value = code;
-            document.getElementById('editorOverlay').classList.remove('hidden');
+            document.getElementById('editorOverlay').style.display = 'flex';
         });
         socket.on('source-code-js', (code) => {
             document.getElementById('editorCode').value = code;
-            document.getElementById('editorOverlay').classList.remove('hidden');
+            document.getElementById('editorOverlay').style.display = 'flex';
         });
 
         function previewCode() {
