@@ -19,7 +19,21 @@ PANEL_PORT="${PANEL_PORT:-7860}"
 GITEA_ROOT_URL="${GITEA_ROOT_URL:-}"
 GITEA_DISABLE_REGISTRATION="${GITEA_DISABLE_REGISTRATION:-true}"
 
-mkdir -p /app /tmp /opt/gitea "$GITEA_WORK_DIR" "$GITEA_CUSTOM/conf" /app/.pm2
+# Pages (deadnews/gitea-pages) — 同容器 PM2
+GITEA_PAGES_PORT="${GITEA_PAGES_PORT:-8000}"
+GITEA_PAGES_ADDR="${GITEA_PAGES_ADDR:-127.0.0.1:${GITEA_PAGES_PORT}}"
+GITEA_PAGES_BRANCH="${GITEA_PAGES_BRANCH:-gh-pages}"
+GITEA_PAGES_SERVER="${GITEA_PAGES_SERVER:-http://127.0.0.1:${GITEA_HTTP_PORT}}"
+# Secret: GITEA_PAGES_TOKEN（读仓库 contents 权限的 PAT）
+
+# Renovate — 同容器周期任务（无 Docker，npm 安装）
+RENOVATE_ENABLED="${RENOVATE_ENABLED:-auto}"   # auto|true|false；auto=有 RENOVATE_TOKEN 则开
+RENOVATE_INTERVAL="${RENOVATE_INTERVAL:-3600}" # 秒
+RENOVATE_ENDPOINT="${RENOVATE_ENDPOINT:-}"     # 默认 ${GITEA_ROOT_URL}/api/v1/
+# Secret: RENOVATE_TOKEN；可选 GITHUB_COM_TOKEN
+
+mkdir -p /app /tmp /opt/gitea /opt/gitea-pages /opt/renovate /data/renovate \
+  "$GITEA_WORK_DIR" "$GITEA_CUSTOM/conf" /app/.pm2
 chmod 777 /tmp /app 2>/dev/null || true
 cd /app
 
@@ -56,6 +70,22 @@ ensure_gitea() {
   log "installed gitea $LATEST"
 }
 
+# 确保 [packages] 开启（内置，无独立进程）
+ensure_packages_ini() {
+  local conf="$GITEA_WORK_DIR/custom/conf/app.ini"
+  [ -f "$conf" ] || return 0
+  if grep -q '^\[packages\]' "$conf" 2>/dev/null; then
+    if grep -A5 '^\[packages\]' "$conf" | grep -q '^ENABLED'; then
+      sed -i '/^\[packages\]/,/^\[/{s/^ENABLED *=.*/ENABLED = true/}' "$conf" 2>/dev/null || true
+    else
+      sed -i '/^\[packages\]/a ENABLED = true' "$conf" 2>/dev/null || true
+    fi
+  else
+    printf '\n[packages]\nENABLED = true\n' >> "$conf"
+  fi
+  log "packages ENABLED=true in app.ini"
+}
+
 ensure_gitea_config() {
   local conf="$GITEA_WORK_DIR/custom/conf/app.ini"
   mkdir -p "$(dirname "$conf")"
@@ -68,6 +98,7 @@ ensure_gitea_config() {
         sed -i "/^\[server\]/a ROOT_URL = ${GITEA_ROOT_URL}" "$conf" 2>/dev/null || true
       fi
     fi
+    ensure_packages_ini
     return 0
   fi
   local root_url="${GITEA_ROOT_URL:-http://127.0.0.1:${GITEA_HTTP_PORT}/}"
@@ -97,6 +128,9 @@ ROOT = ${GITEA_WORK_DIR}/repositories
 
 [lfs]
 PATH = ${GITEA_WORK_DIR}/lfs
+
+[packages]
+ENABLED = true
 
 [log]
 MODE = console
@@ -129,8 +163,98 @@ REPO_INDEXER_ENABLED = false
 EOF
 }
 
+# ---------- gitea-pages 二进制（deadnews/gitea-pages）----------
+ensure_pages() {
+  mkdir -p /opt/gitea-pages /data/gitea-pages
+  if [ -x /opt/gitea-pages/gitea-pages ]; then
+    log "gitea-pages: $(/opt/gitea-pages/gitea-pages --version 2>/dev/null || echo ok)"
+    return 0
+  fi
+  log "Downloading gitea-pages..."
+  local VER="${GITEA_PAGES_VERSION:-1.0.1}"
+  local URL="https://github.com/deadnews/gitea-pages/releases/download/v${VER}/gitea-pages_${VER}_linux_amd64.tar.gz"
+  if curl -fL --retry 3 "$URL" -o /tmp/gitea-pages.tgz; then
+    tar -xzf /tmp/gitea-pages.tgz -C /tmp
+    # tarball 内可能是 gitea-pages 或带路径
+    local BIN
+    BIN=$(find /tmp -maxdepth 3 -type f -name 'gitea-pages' 2>/dev/null | head -1)
+    if [ -n "$BIN" ] && [ -f "$BIN" ]; then
+      mv "$BIN" /opt/gitea-pages/gitea-pages
+      chmod +x /opt/gitea-pages/gitea-pages
+      echo "$VER" > /opt/gitea-pages/version
+      log "installed gitea-pages $VER"
+      return 0
+    fi
+  fi
+  log "WARN gitea-pages download failed"
+  return 1
+}
+
+# ---------- Renovate（npm，无 Docker）----------
+ensure_renovate() {
+  mkdir -p /opt/renovate /data/renovate
+  if [ -x /opt/renovate/node_modules/.bin/renovate ]; then
+    log "renovate: present"
+    return 0
+  fi
+  log "npm install renovate (may take a while)..."
+  if npm install --prefix /opt/renovate renovate --omit=dev 2>&1 | tail -15; then
+    log "renovate installed"
+    return 0
+  fi
+  log "WARN renovate install failed"
+  return 1
+}
+
+write_renovate_config() {
+  mkdir -p /data/renovate
+  local ep="${RENOVATE_ENDPOINT}"
+  if [ -z "$ep" ]; then
+    if [ -n "${GITEA_ROOT_URL:-}" ]; then
+      ep="${GITEA_ROOT_URL%/}/api/v1/"
+    else
+      ep="http://127.0.0.1:${GITEA_HTTP_PORT}/api/v1/"
+    fi
+  fi
+  if [ -f /data/renovate/config.js ] && ! grep -q 'NEXUS_MANAGED' /data/renovate/config.js 2>/dev/null; then
+    log "keep existing /data/renovate/config.js"
+    return 0
+  fi
+  cat > /data/renovate/config.js << EOFCFG
+// NEXUS_MANAGED
+module.exports = {
+  platform: 'gitea',
+  endpoint: '${ep}',
+  token: process.env.RENOVATE_TOKEN,
+  gitAuthor: process.env.RENOVATE_GIT_AUTHOR || 'Renovate Bot <renovate@localhost>',
+  username: process.env.RENOVATE_USERNAME || 'renovate-bot',
+  autodiscover: true,
+  persistRepoData: true,
+  baseDir: '/data/renovate/cache',
+  binarySource: 'global',
+  onboardingConfig: { extends: ['config:recommended'] },
+};
+EOFCFG
+  log "wrote /data/renovate/config.js endpoint=$ep"
+}
+
 ensure_gitea || log "WARN gitea download failed"
 ensure_gitea_config
+ensure_pages || true
+# renovate 安装较慢：有 token 或显式启用才装
+_ren_on=false
+case "${RENOVATE_ENABLED}" in
+  true|1|yes|on) _ren_on=true ;;
+  auto)
+    if [ -n "${RENOVATE_TOKEN:-}" ]; then _ren_on=true; fi
+    ;;
+esac
+if [ "$_ren_on" = true ]; then
+  ensure_renovate || true
+  write_renovate_config || true
+else
+  log "renovate skipped (set RENOVATE_TOKEN or RENOVATE_ENABLED=true)"
+fi
 
 # ---------- 完整 UI（ANSI + 热编辑）----------
 cat << 'EOFUI' > /app/terminal-ui.html
@@ -184,11 +308,16 @@ cat << 'EOFUI' > /app/terminal-ui.html
         <div class="border-b border-zinc-800 bg-[#0a0a0a] p-3 flex flex-wrap gap-2 text-xs font-medium z-20">
             <button onclick="sendCommand('status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📊 状态</button>
             <button onclick="sendCommand('pm2 status')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📦 PM2</button>
-            <button onclick="sendCommand('restart gitea')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">♻️ 重启 Gitea</button>
+            <button onclick="sendCommand('restart gitea')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-orange-400">♻️ Gitea</button>
+            <button onclick="sendCommand('restart pages')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-sky-400">♻️ Pages</button>
+            <button onclick="sendCommand('restart renovate')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-amber-400">♻️ Renovate</button>
             <button onclick="sendCommand('update gitea')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-blue-400">🔄 更新 Gitea</button>
-            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-purple-400">🔄 更新 Tunnel</button>
-            <button onclick="sendCommand('gitea log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Gitea 日志</button>
-            <button onclick="sendCommand('tunnel log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Tunnel 日志</button>
+            <button onclick="sendCommand('update pages')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-sky-300">🔄 更新 Pages</button>
+            <button onclick="sendCommand('update tunnel')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-purple-400">🔄 Tunnel</button>
+            <button onclick="sendCommand('gitea log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Gitea</button>
+            <button onclick="sendCommand('pages log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Pages</button>
+            <button onclick="sendCommand('renovate log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Renovate</button>
+            <button onclick="sendCommand('tunnel log')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-300">📋 Tunnel</button>
             <button onclick="sendCommand('clear')" class="btn-action bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-lg text-zinc-500 ml-auto">🗑️ 清屏</button>
         </div>
 
@@ -399,9 +528,16 @@ module.exports = {
     socket.on('command', (cmd) => {
       if (cmd === 'help') {
         socket.emit('output',
-          'status | pm2 status | pm2 logs\n' +
-          'restart gitea | stop gitea | update gitea | update tunnel\n' +
-          'gitea log | tunnel log | clear\n'
+          'status | packages | pm2 status | pm2 logs\n' +
+          'restart gitea|pages|renovate|tunnel\n' +
+          'stop gitea|pages|renovate\n' +
+          'update gitea|pages|tunnel|renovate\n' +
+          'gitea log | pages log | renovate log | tunnel log\n' +
+          'renovate once  (run one scan now)\n' +
+          'clear\n\n' +
+          'Package = built-in [packages] in app.ini\n' +
+          'Pages = deadnews/gitea-pages :8000 (GITEA_PAGES_TOKEN)\n' +
+          'Renovate = loop job (RENOVATE_TOKEN)\n'
         );
         socket.emit('system', '[Process completed]');
         return;
@@ -411,20 +547,44 @@ module.exports = {
 
       if (cmd === 'status') {
         script = `
-echo "=== Gitea / Tunnel ==="
+echo "=== Gitea / Packages / Pages / Renovate / Tunnel ==="
 echo -n "gitea: "; /opt/gitea/gitea --version 2>/dev/null | head -1 || echo missing
 echo -n "ver: "; cat /opt/gitea/version 2>/dev/null || echo none
 echo -n "WORK_DIR: "; echo "${process.env.GITEA_WORK_DIR || '/data/gitea'}"
 echo -n "Gitea :3000: "; curl -fsS -o /dev/null -m 3 -w "%{http_code}" http://127.0.0.1:3000/ 2>/dev/null || echo down; echo
 echo -n "ROOT_URL: "; grep -E '^ROOT_URL' /data/gitea/custom/conf/app.ini 2>/dev/null || echo n/a
-echo "--- last gitea log ---"
-tail -n 15 /tmp/gitea.log 2>/dev/null || ${PM2} logs gitea --lines 15 --nostream 2>/dev/null || true
+echo -n "packages: "; grep -A3 '^\\[packages\\]' /data/gitea/custom/conf/app.ini 2>/dev/null | grep ENABLED || echo 'check app.ini'
+echo -n "pages bin: "; [ -x /opt/gitea-pages/gitea-pages ] && echo "ok v$(cat /opt/gitea-pages/version 2>/dev/null)" || echo missing
+echo -n "pages :8000: "; curl -fsS -o /dev/null -m 3 -w "%{http_code}" http://127.0.0.1:8000/health 2>/dev/null || echo down; echo
+echo -n "GITEA_PAGES_TOKEN: "; [ -n "$GITEA_PAGES_TOKEN" ] && echo set || echo 'NOT SET'
+echo -n "renovate: "; [ -x /opt/renovate/node_modules/.bin/renovate ] && echo ok || echo missing
+echo -n "RENOVATE_TOKEN: "; [ -n "$RENOVATE_TOKEN" ] && echo set || echo 'NOT SET'
 ${PM2} status 2>/dev/null || true
+`;
+      } else if (cmd === 'packages') {
+        script = `
+echo "=== Gitea Package Registry (built-in, no extra process) ==="
+grep -A10 '^\\[packages\\]' /data/gitea/custom/conf/app.ini 2>/dev/null || echo 'no [packages] section'
+echo ""
+echo "Docs: https://docs.gitea.com/usage/packages/overview"
+echo "Need PAT with package read/write. Examples:"
+echo "  docker login <gitea-host>"
+echo "  npm: //host/api/packages/OWNER/npm/"
 `;
       } else if (cmd === 'restart gitea') {
         script = `${PM2} restart gitea --update-env; sleep 2; ${PM2} status gitea; echo done`;
+      } else if (cmd === 'restart pages') {
+        script = `${PM2} restart pages --update-env 2>/dev/null || true; sleep 1; ${PM2} status pages; curl -fsS -m 3 http://127.0.0.1:8000/health || true; echo`;
+      } else if (cmd === 'restart renovate') {
+        script = `${PM2} restart renovate --update-env 2>/dev/null || echo 'no renovate (set RENOVATE_TOKEN)'; ${PM2} status renovate 2>/dev/null || true`;
+      } else if (cmd === 'restart tunnel') {
+        script = `${PM2} restart tunnel --update-env 2>/dev/null || echo no tunnel`;
       } else if (cmd === 'stop gitea') {
         script = `${PM2} stop gitea; echo stopped`;
+      } else if (cmd === 'stop pages') {
+        script = `${PM2} stop pages; echo stopped`;
+      } else if (cmd === 'stop renovate') {
+        script = `${PM2} stop renovate; echo stopped`;
       } else if (cmd === 'update gitea') {
         script = `
 set -e
@@ -438,6 +598,33 @@ curl -fL "https://dl.gitea.com/gitea/${LATEST}/gitea-${LATEST}-linux-amd64" -o /
 chmod +x /tmp/gitea.new; mv /tmp/gitea.new /opt/gitea/gitea
 echo "$LATEST" > /opt/gitea/version
 ${PM2} restart gitea --update-env
+echo done
+`;
+      } else if (cmd === 'update pages') {
+        script = `
+set -e
+VER=\${GITEA_PAGES_VERSION:-1.0.1}
+TAG=$(curl -fsSIL https://github.com/deadnews/gitea-pages/releases/latest 2>/dev/null | tr -d '\\r' | awk -F/ 'tolower(\$1) ~ /location/ {print \$NF; exit}')
+[ -n "\$TAG" ] && VER=\${TAG#v}
+LOCAL=$(cat /opt/gitea-pages/version 2>/dev/null || echo none)
+echo "Local=\$LOCAL Remote=\$VER"
+URL="https://github.com/deadnews/gitea-pages/releases/download/v\${VER}/gitea-pages_\${VER}_linux_amd64.tar.gz"
+curl -fL --retry 3 "\$URL" -o /tmp/gitea-pages.tgz
+rm -rf /tmp/gp-extract; mkdir -p /tmp/gp-extract
+tar -xzf /tmp/gitea-pages.tgz -C /tmp/gp-extract
+BIN=$(find /tmp/gp-extract -type f -name gitea-pages | head -1)
+[ -n "\$BIN" ] || { echo extract fail; exit 1; }
+mv "\$BIN" /opt/gitea-pages/gitea-pages
+chmod +x /opt/gitea-pages/gitea-pages
+echo "\$VER" > /opt/gitea-pages/version
+${PM2} restart pages --update-env || true
+echo done
+`;
+      } else if (cmd === 'update renovate') {
+        script = `
+set -e
+npm install --prefix /opt/renovate renovate@latest --omit=dev 2>&1 | tail -20
+${PM2} restart renovate --update-env 2>/dev/null || true
 echo done
 `;
       } else if (cmd === 'update tunnel') {
@@ -456,8 +643,19 @@ echo done
 `;
       } else if (cmd === 'gitea log') {
         script = `${PM2} logs gitea --lines 100 --nostream 2>/dev/null || tail -n 100 /tmp/gitea.log 2>/dev/null || echo no log`;
+      } else if (cmd === 'pages log') {
+        script = `${PM2} logs pages --lines 100 --nostream 2>/dev/null || tail -n 100 /tmp/pages.log 2>/dev/null || echo no log`;
+      } else if (cmd === 'renovate log') {
+        script = `${PM2} logs renovate --lines 100 --nostream 2>/dev/null || tail -n 100 /tmp/renovate.log 2>/dev/null || echo no log`;
       } else if (cmd === 'tunnel log') {
         script = `${PM2} logs tunnel --lines 80 --nostream 2>/dev/null || tail -n 80 /tmp/tunnel.log 2>/dev/null || echo no log`;
+      } else if (cmd === 'renovate once') {
+        script = `
+export RENOVATE_CONFIG_FILE=/data/renovate/config.js
+if [ -z "\$RENOVATE_TOKEN" ]; then echo "RENOVATE_TOKEN empty"; exit 1; fi
+if [ ! -x /opt/renovate/node_modules/.bin/renovate ]; then echo "renovate not installed"; exit 1; fi
+/opt/renovate/node_modules/.bin/renovate 2>&1 | tail -100
+`;
       } else if (cmd.startsWith('pm2 ')) {
         script = PM2 + ' ' + cmd.slice(4);
       } else if (cmd === 'pm2 status' || cmd === 'pm2 list') {
@@ -522,17 +720,18 @@ export PATH="/app/node_modules/.bin:$PATH"
 export GITEA_WORK_DIR GITEA_CUSTOM
 
 (
-  log "start gitea + tunnel..."
+  log "start gitea + pages + renovate + tunnel..."
   $PM2 delete gitea 2>/dev/null || true
+  $PM2 delete pages 2>/dev/null || true
+  $PM2 delete renovate 2>/dev/null || true
   $PM2 delete tunnel 2>/dev/null || true
 
   if [ -x /opt/gitea/gitea ]; then
-    # 以 git 用户运行（Gitea 1.27+ 禁止 root）
     chown -R git:git "$GITEA_WORK_DIR" /opt/gitea 2>/dev/null || true
-    # 若已有 app.ini 仍是 RUN_USER=root，改成 git
     if [ -f "$GITEA_WORK_DIR/custom/conf/app.ini" ]; then
       sed -i 's/^RUN_USER *=.*/RUN_USER = git/' "$GITEA_WORK_DIR/custom/conf/app.ini" 2>/dev/null || true
     fi
+    ensure_packages_ini 2>/dev/null || true
     cat > /opt/gitea/run.sh << 'RUNSH'
 #!/bin/bash
 set -u
@@ -541,13 +740,11 @@ export GITEA_CUSTOM="${GITEA_CUSTOM:-/data/gitea/custom}"
 export USER=git
 export HOME=/home/git
 export USERNAME=git
-# 仅当无法创建 git 用户时的危险兜底（容器内）
 if [ "$(id -u)" = "0" ] && ! id git >/dev/null 2>&1; then
   export GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=true
 fi
 cd "$GITEA_WORK_DIR" || exit 1
 if id git >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
-  # drop privileges: runuser preferred, else su
   if command -v runuser >/dev/null 2>&1; then
     exec runuser -u git -- env \
       HOME=/home/git USER=git USERNAME=git \
@@ -560,7 +757,6 @@ if id git >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
     exec su -s /bin/bash git -c "export HOME=/home/git USER=git GITEA_WORK_DIR='$GITEA_WORK_DIR' GITEA_CUSTOM='$GITEA_CUSTOM'; cd '$GITEA_WORK_DIR' && exec /opt/gitea/gitea web --config '$GITEA_WORK_DIR/custom/conf/app.ini' --work-path '$GITEA_WORK_DIR' --custom-path '$GITEA_CUSTOM'"
   fi
 else
-  # last resort only if no git user
   export GITEA_I_AM_BEING_UNSAFE_RUNNING_AS_ROOT=true
   exec /opt/gitea/gitea web \
     --config "${GITEA_WORK_DIR}/custom/conf/app.ini" \
@@ -578,6 +774,75 @@ RUNSH
       --time || true
   else
     log "ERROR: no gitea binary"
+  fi
+
+  # ---------- Pages (同容器) ----------
+  if [ -x /opt/gitea-pages/gitea-pages ]; then
+    if [ -z "${GITEA_PAGES_TOKEN:-}" ]; then
+      log "WARN: GITEA_PAGES_TOKEN empty — pages will not start until token set"
+    else
+      cat > /opt/gitea-pages/run.sh << 'PAGERUN'
+#!/bin/bash
+set -u
+export GITEA_PAGES_SERVER="${GITEA_PAGES_SERVER:-http://127.0.0.1:3000}"
+export GITEA_PAGES_TOKEN="${GITEA_PAGES_TOKEN}"
+export GITEA_PAGES_BRANCH="${GITEA_PAGES_BRANCH:-gh-pages}"
+export GITEA_PAGES_ADDR="${GITEA_PAGES_ADDR:-127.0.0.1:8000}"
+# wait gitea
+for i in $(seq 1 60); do
+  curl -fsS -o /dev/null -m 2 http://127.0.0.1:3000/ 2>/dev/null && break
+  sleep 2
+done
+exec /opt/gitea-pages/gitea-pages
+PAGERUN
+      chmod +x /opt/gitea-pages/run.sh
+      $PM2 start /opt/gitea-pages/run.sh \
+        --name pages \
+        --interpreter bash \
+        --max-restarts 30 \
+        --restart-delay 8000 \
+        --log /tmp/pages.log \
+        --time || true
+      log "pages PM2 started (:${GITEA_PAGES_PORT:-8000})"
+    fi
+  else
+    log "pages binary missing (skip)"
+  fi
+
+  # ---------- Renovate 周期任务 ----------
+  if [ -x /opt/renovate/node_modules/.bin/renovate ] && [ -n "${RENOVATE_TOKEN:-}" ]; then
+    write_renovate_config || true
+    cat > /opt/renovate/run-loop.sh << 'RENLOOP'
+#!/bin/bash
+set -u
+export RENOVATE_CONFIG_FILE="${RENOVATE_CONFIG_FILE:-/data/renovate/config.js}"
+export RENOVATE_TOKEN="${RENOVATE_TOKEN}"
+export GITHUB_COM_TOKEN="${GITHUB_COM_TOKEN:-}"
+export PATH="/opt/renovate/node_modules/.bin:$PATH"
+INTERVAL="${RENOVATE_INTERVAL:-3600}"
+# wait gitea
+for i in $(seq 1 90); do
+  curl -fsS -o /dev/null -m 2 http://127.0.0.1:3000/ 2>/dev/null && break
+  sleep 2
+done
+while true; do
+  echo "[renovate] run $(date -Is 2>/dev/null || date)"
+  /opt/renovate/node_modules/.bin/renovate || echo "[renovate] exit $?"
+  echo "[renovate] sleep ${INTERVAL}s"
+  sleep "$INTERVAL"
+done
+RENLOOP
+    chmod +x /opt/renovate/run-loop.sh
+    $PM2 start /opt/renovate/run-loop.sh \
+      --name renovate \
+      --interpreter bash \
+      --max-restarts 20 \
+      --restart-delay 15000 \
+      --log /tmp/renovate.log \
+      --time || true
+    log "renovate PM2 loop started (interval=${RENOVATE_INTERVAL:-3600}s)"
+  else
+    log "renovate not started (need binary + RENOVATE_TOKEN)"
   fi
 
   CF="${CLOUDFLARE_TUNNEL_TOKEN:-${CF_TOKEN:-}}"
@@ -598,8 +863,8 @@ RUNSH
   $PM2 save 2>/dev/null || true
   sleep 3
   $PM2 list || true
-  # 探测 gitea
-  curl -fsS -o /dev/null -m 3 -w "[startup] gitea http=%{http_code}\n" http://127.0.0.1:3000/ 2>/dev/null || echo "[startup] gitea not up yet, see: pm2 logs gitea"
+  curl -fsS -o /dev/null -m 3 -w "[startup] gitea http=%{http_code}\n" http://127.0.0.1:3000/ 2>/dev/null || echo "[startup] gitea not up yet"
+  curl -fsS -o /dev/null -m 3 -w "[startup] pages health=%{http_code}\n" http://127.0.0.1:8000/health 2>/dev/null || echo "[startup] pages not up (token?)"
 ) >/tmp/startup-bg.log 2>&1 &
 
 log "panel :${PANEL_PORT}"
