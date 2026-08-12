@@ -509,7 +509,12 @@ fi
     echo "[Info] Starting background initialization..."
 
     # --- 1. 启动 Kuma ---
-    if [ ! -d "/app/kuma" ]; then git clone --depth=1 https://github.com/louislam/uptime-kuma.git /app/kuma; fi
+    KUMA_REPO_URL="${KUMA_REPO_URL:-https://github.com/XingLingQAQ/uptime-kuma.git}"
+    if [ ! -d "/app/kuma" ]; then
+        git clone --depth=1 "$KUMA_REPO_URL" /app/kuma
+    else
+        git -C /app/kuma remote set-url origin "$KUMA_REPO_URL"
+    fi
     cd /app/kuma
     if [ ! -d "node_modules" ]; then npm ci --production; fi
     # 这里必须下载前端包，否则无法启动
