@@ -2,7 +2,7 @@ name: Keep Hugging Face Spaces Active
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 */5 * * *"
   workflow_dispatch:
     inputs:
       urls:
@@ -24,55 +24,38 @@ env:
 
 jobs:
   visit-spaces:
-    name: Visit configured Spaces
+    name: Visit configured Spaces in Chromium
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Visit each configured Space
+      - name: Check out workflow files
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser automation runtime
+        run: npm install --no-save playwright-core
+
+      - name: Visit each configured Space in a visible Chromium window
         shell: bash
         run: |
-          set -uo pipefail
-
+          set -euo pipefail
           urls="${MANUAL_URLS:-${REPOSITORY_URLS:-$DEFAULT_URLS}}"
-          failures=0
+          browser_path="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          export SPACE_URLS="$urls"
+          export BROWSER_EXECUTABLE_PATH="$browser_path"
+          "$browser_path" --version
+          xvfb-run --auto-servernum node .github/scripts/visit-spaces.mjs
 
-          while IFS= read -r raw_url; do
-            url="$(echo "$raw_url" | xargs)"
-            [ -z "$url" ] && continue
-
-            echo "::group::Visiting $url"
-            response_file="$(mktemp)"
-
-            if status_code="$(curl \
-              --location \
-              --silent \
-              --show-error \
-              --connect-timeout 15 \
-              --max-time 45 \
-              --output "$response_file" \
-              --write-out '%{http_code}' \
-              --user-agent 'Mozilla/5.0 (compatible; HF-Space-Keepalive/1.0)' \
-              "$url")"; then
-              response_bytes="$(wc -c < "$response_file" | tr -d ' ')"
-              echo "HTTP status: $status_code; body bytes: $response_bytes"
-
-              if [[ "$status_code" =~ ^[23][0-9][0-9]$ ]]; then
-                echo "Visit completed."
-              else
-                echo "::error::Unexpected HTTP status $status_code for $url"
-                failures=$((failures + 1))
-              fi
-            else
-              echo "::error::Request failed for $url"
-              failures=$((failures + 1))
-            fi
-
-            rm -f "$response_file"
-            echo "::endgroup::"
-          done < <(printf '%s\n' "$urls" | tr ',' '\n')
-
-          if [ "$failures" -gt 0 ]; then
-            echo "::error::$failures Space visit(s) failed"
-            exit 1
-          fi
+      - name: Upload browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: space-visit-artifacts
+          path: space-visit-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
