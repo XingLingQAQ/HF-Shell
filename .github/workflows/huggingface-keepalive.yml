@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DEFAULT_URLS: "https://xinglingqaq-gitea.hf.space/,https://xinglingqaq-jenkins.hf.space/"
+  DEFAULT_URLS: "https://xinglingqaq-gitea.hf.space/,https://xinglingqaq-jenkins.hf.space/,https://xinglingqaq-uptime.hf.space/"
   REPOSITORY_URLS: ${{ vars.HF_KEEPALIVE_URLS }}
   MANUAL_URLS: ${{ inputs.urls }}
 
