@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DEFAULT_URLS: "https://xinglingqaq-gitea.hf.space/,https://xinglingqaq-jenkins.hf.space/,https://xinglingqaq-uptime.hf.space/"
+  DEFAULT_URLS: "https://xinglingqaq-gitea.hf.space/,https://xinglingqaq-jenkins.hf.space/,https://xinglingqaq-uptime.hf.space/,https://xinglingqaq-agent-1.hf.space/,https://mo-cheng-ja-1.hf.space/,https://mo-cheng-ja-2.hf.space/,https://mo-cheng-ja-3.hf.space/,https://xinglingqaq-komari.hf.space/,https://xinglingqaq-qqbot.hf.space/,https://xinglingqaq-reposilite.hf.space/,https://xinglingqaq-xv.hf.space/"
   REPOSITORY_URLS: ${{ vars.HF_KEEPALIVE_URLS }}
   MANUAL_URLS: ${{ inputs.urls }}
 
