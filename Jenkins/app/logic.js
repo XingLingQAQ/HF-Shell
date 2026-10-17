@@ -79,7 +79,7 @@ module.exports = {
 
       if (cmd === 'status' || cmd === 'pm2 status') {
         lines = pm2Prefix().concat([
-          'echo "=== status (PM2 / Java 21 required) ==="',
+          'echo "=== status (PM2 / Java 21+ required) ==="',
           'echo -n "Java: "; java -version 2>&1 | head -1',
           'echo -n "JAVA_HOME="; echo "$JAVA_HOME"',
           'echo -n "Java ver: "; cat /opt/java/version 2>/dev/null || echo none',
@@ -111,30 +111,31 @@ module.exports = {
       } else if (cmd === 'update java') {
         lines = pm2Prefix().concat([
           'set -e',
-          'echo "=== update java (Temurin 21 — Jenkins 最低要求) ==="',
+          'echo "=== update java (Temurin 25 — Jenkins supported LTS) ==="',
           'LOCAL=$(cat /opt/java/version 2>/dev/null || echo none)',
-          'META=$(curl -fsSL "https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B21%2C22%29&os=linux&arch=x64&image_type=jdk&jvm_impl=hotspot&page_size=1&sort_order=DESC" || true)',
-          'LATEST=$(echo "$META" | tr "," "\\n" | sed -n "s/.*\\"openjdk_version\\":\\"\\([^\\"]*\\)\\".*/\\1/p" | head -1)',
-          'if [ -z "$LATEST" ]; then LATEST=$(echo "$META" | tr "," "\\n" | sed -n "s/.*\\"semver\\":\\"\\([^\\"]*\\)\\".*/\\1/p" | head -1); fi',
+          'META=$(curl -fsSL "https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B25%2C26%29&os=linux&arch=x64&image_type=jdk&jvm_impl=hotspot&page_size=1&sort_order=DESC" || true)',
+          // The API returns pretty-printed JSON, so the colon is followed by a space.
+          'LATEST=$(echo "$META" | grep -oE "\\"openjdk_version\\"[[:space:]]*:[[:space:]]*\\"[^\\"]*\\"" | head -1 | sed -E "s/.*:[[:space:]]*\\"([^\\"]*)\\".*/\\1/")',
+          'if [ -z "$LATEST" ]; then LATEST=$(echo "$META" | grep -oE "\\"semver\\"[[:space:]]*:[[:space:]]*\\"[^\\"]*\\"" | head -1 | sed -E "s/.*:[[:space:]]*\\"([^\\"]*)\\".*/\\1/"); fi',
           'echo "Local=$LOCAL Remote=$LATEST"',
           'if [ -z "$LATEST" ]; then echo "Adoptium fail"; exit 1; fi',
           'if [ "$LATEST" = "$LOCAL" ] && [ -x /opt/java/current/bin/java ]; then echo "already $LATEST"; exit 0; fi',
           'STAGING=/opt/java/staging',
           'rm -rf "$STAGING"; mkdir -p "$STAGING"',
-          'curl -fL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk21.tar.gz',
-          'SIZE=$(wc -c < /tmp/jdk21.tar.gz | tr -d " ")',
+          'curl -fL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk25.tar.gz',
+          'SIZE=$(wc -c < /tmp/jdk25.tar.gz | tr -d " ")',
           'if [ "$SIZE" -lt 50000000 ]; then echo "bad jdk $SIZE"; exit 1; fi',
-          'tar -xzf /tmp/jdk21.tar.gz -C "$STAGING"',
+          'tar -xzf /tmp/jdk25.tar.gz -C "$STAGING"',
           'INNER=$(find "$STAGING" -maxdepth 1 -type d -name "jdk-*" | head -1)',
           'if [ -z "$INNER" ] || [ ! -x "$INNER/bin/java" ]; then echo "extract fail"; exit 1; fi',
           'DEST="/opt/java/$(basename "$INNER")"',
           'rm -rf "$DEST"; mv "$INNER" "$DEST"',
           'ln -sfn "$DEST" /opt/java/current',
           'echo "$LATEST" > /opt/java/version',
-          'rm -rf "$STAGING" /tmp/jdk21.tar.gz',
+          'rm -rf "$STAGING" /tmp/jdk25.tar.gz',
           '/opt/java/current/bin/java -version 2>&1 | head -3',
           'pm2 restart jenkins --update-env || true',
-          'echo "java 21 switched + pm2 restart jenkins"',
+          'echo "java 25 switched + pm2 restart jenkins"',
         ]);
       } else if (cmd === 'update tunnel') {
         lines = pm2Prefix().concat([

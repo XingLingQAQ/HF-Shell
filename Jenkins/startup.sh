@@ -1,7 +1,7 @@
 #!/bin/bash
-# Jenkins + Nexus — Java 21 + PM2 保活
+# Jenkins + Nexus — Java 25 + PM2 保活
 # 覆盖: https://github.com/XingLingQAQ/HF-Shell/blob/main/Jenkins/startup.sh
-# 新版 Jenkins 要求 Java 21+（17 会直接拒绝启动）
+# Jenkins 要求 Java 21+，本脚本安装 Temurin 25（17 会直接拒绝启动）
 set -u
 
 # 中文 Job/Folder 名必须 UTF-8，否则 Java File.list 变成 U+FFFD 只加载 ASCII 名
@@ -31,7 +31,7 @@ mkdir -p /app /var/jenkins_local/tmp /tmp /opt/jenkins /opt/java /opt/tunnel /da
 chmod 777 /var/jenkins_local/tmp /tmp 2>/dev/null || true
 cd /app
 
-# ---------- 运行时下载：Java 21 / Jenkins war / cloudflared ----------
+# ---------- 运行时下载：Java 25 / Jenkins war / cloudflared ----------
 ensure_java21() {
   NEED=1
   if [ -x /opt/java/current/bin/java ]; then
@@ -40,10 +40,10 @@ ensure_java21() {
       echo "[startup] Java ok: $(/opt/java/current/bin/java -version 2>&1 | head -1)"
       NEED=0
     else
-      echo "[startup] Java ${MAJ:-?} < 21, will install Temurin 21"
+      echo "[startup] Java ${MAJ:-?} < 21, will install Temurin 25"
     fi
   else
-    echo "[startup] No Java at /opt/java/current, install Temurin 21"
+    echo "[startup] No Java at /opt/java/current, install Temurin 25"
   fi
   [ "$NEED" = "0" ] && return 0
 
@@ -51,14 +51,14 @@ ensure_java21() {
   rm -rf "$STAGING"
   mkdir -p "$STAGING" /opt/java
   echo "[startup] Downloading Temurin JDK 21..."
-  curl -fL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
-    -o /tmp/jdk21.tar.gz || return 1
-  SIZE=$(wc -c < /tmp/jdk21.tar.gz | tr -d ' ')
+  curl -fL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+    -o /tmp/jdk25.tar.gz || return 1
+  SIZE=$(wc -c < /tmp/jdk25.tar.gz | tr -d ' ')
   if [ "${SIZE:-0}" -lt 50000000 ]; then
     echo "[startup] ERROR: jdk archive too small ($SIZE)"
     return 1
   fi
-  tar -xzf /tmp/jdk21.tar.gz -C "$STAGING"
+  tar -xzf /tmp/jdk25.tar.gz -C "$STAGING"
   INNER=$(find "$STAGING" -maxdepth 1 -type d -name 'jdk-*' | head -1)
   if [ -z "$INNER" ] || [ ! -x "$INNER/bin/java" ]; then
     echo "[startup] ERROR: extract jdk fail"
@@ -70,7 +70,7 @@ ensure_java21() {
   ln -sfn "$DEST" /opt/java/current
   VER=$("$DEST/bin/java" -version 2>&1 | head -1)
   echo "$VER" > /opt/java/version
-  rm -rf "$STAGING" /tmp/jdk21.tar.gz
+  rm -rf "$STAGING" /tmp/jdk25.tar.gz
   export JAVA_HOME=/opt/java/current
   export PATH="$JAVA_HOME/bin:$PATH"
   echo "[startup] Java installed: $VER"

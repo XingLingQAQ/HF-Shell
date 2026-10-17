@@ -2,7 +2,7 @@
 # Jenkins Space entrypoint.
 #
 # Replaces the original flow where the Space image downloaded Jenkins/startup.sh
-# from GitHub at boot and that script then re-downloaded Java 21, the Jenkins
+# from GitHub at boot and that script then re-downloaded the JDK, the Jenkins
 # war, cloudflared and npm packages. All of those are baked into this image, so
 # the boot path is now: restore state from the B-storage bucket, start PM2,
 # serve the control panel on :7860, and let PM2 supervise Jenkins on :8080.

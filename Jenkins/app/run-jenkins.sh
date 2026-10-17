@@ -14,7 +14,7 @@ if [ ! -f "$WAR" ] || [ ! -s "$WAR" ]; then
 fi
 MAJ=$("$JAVA_BIN" -version 2>&1 | head -1 | sed -n 's/.*version "\([0-9]*\).*/\1/p')
 if [ -n "$MAJ" ] && [ "$MAJ" -lt 21 ]; then
-  echo "[jenkins] Java $MAJ < 21, refuse. Run: update java"
+  echo "[jenkins] Java $MAJ < 21, refuse (Jenkins needs 21 or 25). Run: update java"
   exit 1
 fi
 # 中文目录名：file.encoding + sun.jnu.encoding 必须 UTF-8

@@ -27,18 +27,18 @@ ensure_java21() {
       return 0
     fi
   fi
-  echo "[startup] Installing Temurin JDK 21..."
+  echo "[startup] Installing Temurin JDK 25..."
   STAGING=/opt/java/staging
   rm -rf "$STAGING"; mkdir -p "$STAGING" /opt/java
-  curl -fL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk21.tar.gz || return 1
-  tar -xzf /tmp/jdk21.tar.gz -C "$STAGING"
+  curl -fL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk25.tar.gz || return 1
+  tar -xzf /tmp/jdk25.tar.gz -C "$STAGING"
   INNER=$(find "$STAGING" -maxdepth 1 -type d -name 'jdk-*' | head -1)
   DEST="/opt/java/$(basename "$INNER")"
   rm -rf "$DEST"; mv "$INNER" "$DEST"
   ln -sfn "$DEST" /opt/java/current
   VER=$("$DEST/bin/java" -version 2>&1 | head -1)
   echo "$VER" > /opt/java/version
-  rm -rf "$STAGING" /tmp/jdk21.tar.gz
+  rm -rf "$STAGING" /tmp/jdk25.tar.gz
   echo "[startup] Java installed: $VER"
 }
 
@@ -96,20 +96,20 @@ EOF
 cat << 'EOF' > /app/bin/update-java
 #!/bin/bash
 set -e
-echo "=== 检查 Java 21 (Temurin) 更新 ==="
+echo "=== 检查 Java 25 (Temurin) 更新 ==="
 # 简化逻辑，直接覆盖下载最新 GA 稳定版
 STAGING=/opt/java/staging
 rm -rf "$STAGING"; mkdir -p "$STAGING"
 echo "下载中..."
-curl -fL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk21.tar.gz
-SIZE=$(wc -c < /tmp/jdk21.tar.gz | tr -d ' ')
+curl -fL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" -o /tmp/jdk25.tar.gz
+SIZE=$(wc -c < /tmp/jdk25.tar.gz | tr -d ' ')
 if [ "${SIZE:-0}" -lt 50000000 ]; then echo "下载失败，文件过小"; exit 1; fi
-tar -xzf /tmp/jdk21.tar.gz -C "$STAGING"
+tar -xzf /tmp/jdk25.tar.gz -C "$STAGING"
 INNER=$(find "$STAGING" -maxdepth 1 -type d -name "jdk-*" | head -1)
 DEST="/opt/java/$(basename "$INNER")"
 rm -rf "$DEST"; mv "$INNER" "$DEST"
 ln -sfn "$DEST" /opt/java/current
-rm -rf "$STAGING" /tmp/jdk21.tar.gz
+rm -rf "$STAGING" /tmp/jdk25.tar.gz
 VER=$(/opt/java/current/bin/java -version 2>&1 | head -1)
 echo "$VER" > /opt/java/version
 echo "✅ Java 已更新为: $VER"

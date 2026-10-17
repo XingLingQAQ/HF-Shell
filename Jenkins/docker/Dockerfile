@@ -32,18 +32,20 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64
         | tar -xJ -C /usr/local --strip-components=1 \
     && node -v && npm -v
 
-# ------------------------------------------------------------ Temurin 21 ---
+# ------------------------------------------------------------ Temurin 25 ---
 # The panel expects the JDK at /opt/java/current and reads /opt/java/version to
 # decide whether "update java" is needed, so both are materialised here.
+# 25 is a Jenkins-supported LTS (core's SUPPORTED_JAVA_VERSIONS lists 21 and 25);
+# 21 stays listed there only until its own EOL, so this tracks the newer branch.
 RUN mkdir -p /opt/java/staging \
-    && curl -fL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
-         -o /tmp/jdk21.tar.gz \
-    && test "$(wc -c < /tmp/jdk21.tar.gz)" -gt 50000000 \
-    && tar -xzf /tmp/jdk21.tar.gz -C /opt/java/staging \
+    && curl -fL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+         -o /tmp/jdk25.tar.gz \
+    && test "$(wc -c < /tmp/jdk25.tar.gz)" -gt 50000000 \
+    && tar -xzf /tmp/jdk25.tar.gz -C /opt/java/staging \
     && INNER="$(find /opt/java/staging -maxdepth 1 -type d -name 'jdk-*' | head -1)" \
     && test -x "$INNER/bin/java" \
     && mv "$INNER" /opt/java/ \
-    && rm -rf /opt/java/staging /tmp/jdk21.tar.gz \
+    && rm -rf /opt/java/staging /tmp/jdk25.tar.gz \
     && ln -sfn "/opt/java/$(basename "$INNER")" /opt/java/current \
     && /opt/java/current/bin/java -version 2>&1 | head -1
 
@@ -53,7 +55,7 @@ RUN mkdir -p /opt/java/staging \
 # make the panel re-download the JDK on every click. The API now returns
 # pretty-printed JSON, so the match tolerates whitespace around the colon
 # (the original compact-JSON `tr ',' | sed` pattern silently returned nothing).
-RUN VER="$(curl -fsSL 'https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B21%2C22%29&os=linux&arch=x64&image_type=jdk&jvm_impl=hotspot&page_size=1&sort_order=DESC' \
+RUN VER="$(curl -fsSL 'https://api.adoptium.net/v3/info/release_versions?release_type=ga&version=%5B25%2C26%29&os=linux&arch=x64&image_type=jdk&jvm_impl=hotspot&page_size=1&sort_order=DESC' \
              | grep -oE '"openjdk_version"[[:space:]]*:[[:space:]]*"[^"]*"' \
              | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')" \
     && if [ -z "$VER" ]; then \
