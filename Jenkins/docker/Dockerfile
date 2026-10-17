@@ -81,12 +81,15 @@ RUN LATEST="${JENKINS_VERSION:-$(curl -fsSL https://updates.jenkins.io/stable/la
     && echo "[build] jenkins war: $LATEST"
 
 # ----------------------------------------------------------- cloudflared ---
+# The version marker is read from the binary itself. Asking api.github.com for
+# the latest release tag is unauthenticated and rate-limited, which failed the
+# build with exit 1 as soon as the runner's shared quota was used up.
 RUN mkdir -p /opt/tunnel \
     && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
          -o /opt/tunnel/cloudflared \
     && chmod +x /opt/tunnel/cloudflared \
-    && curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
-         | grep '"tag_name":' | head -1 | cut -d'"' -f4 > /opt/tunnel/version \
+    && /opt/tunnel/cloudflared --version 2>&1 | awk '{print $3}' | head -1 > /opt/tunnel/version \
+    && test -s /opt/tunnel/version \
     && chmod 666 /opt/tunnel/version \
     && echo "[build] cloudflared: $(cat /opt/tunnel/version)"
 
