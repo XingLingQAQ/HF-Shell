@@ -137,7 +137,100 @@ EOFCFG
   done
 ) &
 
-# ---------------- 5. PM2: Gitea + pages + Renovate + tunnel ------------------
+# ---------------- 5. Self-issued service tokens ------------------------------
+# The Space secrets for pages and Renovate are write-only on the Hub, so a Space
+# that is recreated (or whose secrets were never re-entered) silently loses those
+# two processes: the wrapper skips anything whose token is empty. Gitea can mint
+# its own tokens through the admin CLI, so when a token is missing, generate one
+# and remember it on the bucket -- the next start then already has it, and the
+# value survives recreating the Space.
+#
+# Runs before PM2 so the PM2 blocks below see the variables and start both
+# processes on the very first boot.
+TOKEN_STORE=/data/service-tokens.env
+[ -f "$TOKEN_STORE" ] && . "$TOKEN_STORE"
+
+# The DB sits on the bucket and belongs to the `git` account, so every CLI call
+# has to run as that account. Fall back to running directly when runuser is
+# unavailable (the image always has it, but a missing user must not abort boot).
+as_git() {
+  if id git >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+    runuser -u git -- env HOME=/home/git USER=git "$@"
+  else
+    env HOME=/home/git USER=git "$@"
+  fi
+}
+
+issue_token() {
+  # $1 = token name in Gitea, $2 = scopes, $3 = username.
+  # Prints the token on success and returns 0, prints nothing on failure.
+  local base="$1" scopes="$2" user="$3" out name
+  # Gitea is not up yet at this point, so the CLI talks to the database directly.
+  # Names must be unique per user: the bucket already carries a `renovate-bot`
+  # token from the previous deployment and the CLI rejects a repeat name, so
+  # every issued token gets a fresh suffix.
+  name="${base}-$(date +%Y%m%d%H%M%S)"
+  out="$(as_git /opt/gitea/gitea admin user generate-access-token \
+           --config "$CONF" --work-path "$GITEA_WORK_DIR" \
+           --custom-path "$GITEA_CUSTOM" \
+           --username "$user" --token-name "$name" --scopes "$scopes" --raw 2>/dev/null)" || return 1
+  out="$(printf '%s' "$out" | tr -d '\r' | tail -1)"
+  # A real token is one unbroken run of hex/base64 characters.
+  case "$out" in ""|*" "*|*error*|*Error*) return 1 ;; esac
+  [ "${#out}" -ge 20 ] || return 1
+  printf '%s' "$out"
+  return 0
+}
+
+write_token_store() {
+  # Subshell so the restrictive umask does not leak into the rest of the boot.
+  (
+    umask 077
+    {
+      echo "export GITEA_PAGES_TOKEN='${GITEA_PAGES_TOKEN:-}'"
+      echo "export RENOVATE_TOKEN='${RENOVATE_TOKEN:-}'"
+    } > "$TOKEN_STORE"
+  )
+  chown git:git "$TOKEN_STORE" 2>/dev/null || true
+}
+
+# The `git` account here is the Unix account Gitea runs as, not a Gitea user;
+# tokens have to be attached to a row in the `user` table, so pick a real one.
+# Pages only reads repository contents, Renovate writes issues and PRs, and the
+# admin account exists in every deployment, so both default to it -- pages used
+# to run without a token at all because the old secret was unrecoverable.
+TOKEN_USER="${GITEA_TOKEN_USER:-xinglingqaq}"
+# Renovate's own identity exists in the bucket DB and should keep authoring its
+# commits, so prefer it there when the row is present.
+if as_git /opt/gitea/gitea admin user list --config "$CONF" --work-path "$GITEA_WORK_DIR" \
+     --custom-path "$GITEA_CUSTOM" 2>/dev/null | grep -qw 'renovate-bot'; then
+  RENOVATE_USER=renovate-bot
+else
+  RENOVATE_USER="$TOKEN_USER"
+fi
+
+if [ -z "${GITEA_PAGES_TOKEN:-}" ] && [ -x /opt/gitea/gitea ] && [ -f "$CONF" ]; then
+  if GITEA_PAGES_TOKEN="$(issue_token gitea-pages read:repository,read:user "$TOKEN_USER")"; then
+    echo "[Info] issued GITEA_PAGES_TOKEN"
+    write_token_store
+  else
+    GITEA_PAGES_TOKEN=""
+    echo "[WARN] could not issue GITEA_PAGES_TOKEN"
+  fi
+fi
+
+if [ -z "${RENOVATE_TOKEN:-}" ] && [ -x /opt/gitea/gitea ] && [ -f "$CONF" ]; then
+  if RENOVATE_TOKEN="$(issue_token renovate-bot \
+        "write:repository,write:issue,write:user,write:package" "$RENOVATE_USER")"; then
+    echo "[Info] issued RENOVATE_TOKEN"
+    write_token_store
+  else
+    RENOVATE_TOKEN=""
+    echo "[WARN] could not issue RENOVATE_TOKEN"
+  fi
+fi
+
+# ---------------- 6. PM2: Gitea + pages + Renovate + tunnel ------------------
 PM2=/app/node_modules/.bin/pm2
 echo "[Info] PM2 bring-up..."
 "$PM2" delete all >/dev/null 2>&1 || true
