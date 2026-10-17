@@ -57,6 +57,7 @@ module.exports = {
           'restart gitea|pages|renovate|tunnel\n' +
           'stop gitea|pages|renovate\n' +
           'update gitea|pages|tunnel|renovate\n' +
+          'update gitea force  (allow a one-way database migration)\n' +
           'gitea log | pages log | renovate log | tunnel log\n' +
           'renovate once  (run one scan now)\n' +
           'clear\n\n' +
@@ -110,7 +111,8 @@ echo "  npm: //host/api/packages/OWNER/npm/"
         script = `${PM2} stop pages; echo stopped`;
       } else if (cmd === 'stop renovate') {
         script = `${PM2} stop renovate; echo stopped`;
-      } else if (cmd === 'update gitea') {
+      } else if (cmd === 'update gitea' || cmd === 'update gitea force') {
+        const force = cmd.endsWith(' force');
         script = `
 set -e
 LATEST=$(curl -fsSL https://dl.gitea.com/gitea/version.json | grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9.]+"' | head -1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+')
@@ -118,6 +120,22 @@ LOCAL=$(cat /opt/gitea/version 2>/dev/null || echo none)
 echo "Local=$LOCAL Remote=$LATEST"
 [ -z "$LATEST" ] && exit 1
 [ "$LATEST" = "$LOCAL" ] && { echo already; exit 0; }
+
+# A major-version jump migrates the database forward and Gitea cannot go back,
+# so it is refused here rather than discovered after the fact. The DB normally
+# lives on the bucket mount and the schema version is stored in its version
+# table; cross-checking the local binary is the cheap, always-available proxy.
+LMAJ=\${LOCAL%%.*}
+RMAJ=\${LATEST%%.*}
+if [ "$LMAJ" != "$RMAJ" ]; then
+  echo "REFUSED: $LOCAL -> $LATEST crosses a major version."
+  echo "Gitea migrates the database forward on first boot and that is one-way;"
+  echo "the work dir here lives on the bucket mount. Take a backup, then either"
+  echo "rebuild the image with the new GITEA_VERSION (preferred) or run"
+  echo "'update gitea force' to proceed in place."
+  ${force ? 'echo "FORCING migration to $LATEST"' : "exit 1"}
+fi
+
 curl -fL "https://dl.gitea.com/gitea/${LATEST}/gitea-${LATEST}-linux-amd64" -o /tmp/gitea.new \
   || curl -fL "https://github.com/go-gitea/gitea/releases/download/v${LATEST}/gitea-${LATEST}-linux-amd64" -o /tmp/gitea.new
 chmod +x /tmp/gitea.new; mv /tmp/gitea.new /opt/gitea/gitea

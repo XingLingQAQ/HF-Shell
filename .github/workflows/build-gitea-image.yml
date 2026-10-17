@@ -12,8 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       gitea_version:
-        description: "Pin a Gitea release (e.g. 28.1.0). Empty = track latest stable."
+        description: "Gitea release to bake. Must match the bucket DB schema (1.27.x = version 343)."
         required: false
+        default: "1.27.3"
         type: string
       gitea_pages_version:
         description: "Pin a gitea-pages release (e.g. 1.0.3)."
@@ -76,6 +77,10 @@ jobs:
             org.opencontainers.image.title=HF Gitea Space
             org.opencontainers.image.description=Gitea + pages + Renovate + panel runtime for the Hugging Face Docker Space
 
+      # Every arg is defaulted here as well as in the Dockerfile. On a push
+      # event `inputs.*` is empty, and an empty build-arg OVERRIDES the
+      # Dockerfile's ARG default rather than falling back to it -- which is how a
+      # version pin silently becomes "track latest".
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -88,7 +93,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            GITEA_VERSION=${{ inputs.gitea_version }}
+            GITEA_VERSION=${{ inputs.gitea_version || '1.27.3' }}
             GITEA_PAGES_VERSION=${{ inputs.gitea_pages_version || '1.0.3' }}
             NODE_VER=${{ inputs.node_version || '24.22.0' }}
 

@@ -51,9 +51,18 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64
     && node -v && npm -v
 
 # ------------------------------------------------------------------ Gitea ---
-# Leave GITEA_VERSION empty to track the newest stable release; the workflow
-# exposes it as a dispatch input so a rollback is a rebuild, not a hotfix.
-ARG GITEA_VERSION=""
+# Pinned to 1.27.3 to match the schema of the database already living in the
+# bucket. Gitea records its schema state in the `version` table, and this DB
+# reads 343, which Gitea's own migration ledger documents as "1.27.0 ends at
+# migration ID number 342 (database version 343)" -- so the work dir has never
+# been touched by a 28.x binary (migration 343's `action_run_job.max_parallel`
+# column is absent from it).
+#
+# Baking 28.x would make the first boot apply migrations 343-357 to a live
+# database on a throttled bucket mount. That upgrade is supported but one-way, so
+# it stays a deliberate choice: dispatch the workflow with
+# gitea_version=28.1.0 once the Space is verified and a backup is in hand.
+ARG GITEA_VERSION="1.27.3"
 RUN LATEST="${GITEA_VERSION}" \
     && if [ -z "$LATEST" ]; then \
          LATEST="$(curl -fsSL https://dl.gitea.com/gitea/version.json \
