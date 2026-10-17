@@ -1,0 +1,11 @@
+{
+  "name": "hf-gitea-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Control panel and process supervisor for the Gitea Docker Space",
+  "main": "bootstrapper.js",
+  "dependencies": {
+    "pm2": "^7.0.4",
+    "socket.io": "^4.8.4"
+  }
+}

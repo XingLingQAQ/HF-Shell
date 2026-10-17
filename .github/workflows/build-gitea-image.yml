@@ -1,0 +1,109 @@
+name: Build Gitea Space image
+
+# Builds the Gitea Space container and publishes it to GHCR, so the Hugging Face
+# Space can pull a ready image instead of compiling and downloading its runtime
+# on every start.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Gitea/**"
+      - ".github/workflows/build-gitea-image.yml"
+  workflow_dispatch:
+    inputs:
+      gitea_version:
+        description: "Pin a Gitea release (e.g. 28.1.0). Empty = track latest stable."
+        required: false
+        type: string
+      gitea_pages_version:
+        description: "Pin a gitea-pages release (e.g. 1.0.3)."
+        required: false
+        default: "1.0.3"
+        type: string
+      node_version:
+        description: "Node runtime version (Renovate requires >= 24.11)."
+        required: false
+        default: "24.22.0"
+        type: string
+      no_cache:
+        description: "Ignore the layer cache and rebuild from scratch."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-gitea-image
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/hf-gitea
+
+jobs:
+  build:
+    name: Build and push to GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=gitea-${{ inputs.gitea_version }},enable=${{ inputs.gitea_version != '' }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=HF Gitea Space
+            org.opencontainers.image.description=Gitea + pages + Renovate + panel runtime for the Hugging Face Docker Space
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: Gitea
+          file: Gitea/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          no-cache: ${{ inputs.no_cache == true }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GITEA_VERSION=${{ inputs.gitea_version }}
+            GITEA_PAGES_VERSION=${{ inputs.gitea_pages_version || '1.0.3' }}
+            NODE_VER=${{ inputs.node_version || '24.22.0' }}
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Gitea Space image published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo 'The Space consumes it with a one-line `FROM`:'
+            echo
+            echo '```dockerfile'
+            echo "FROM ghcr.io/${{ env.IMAGE_NAME }}:latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
